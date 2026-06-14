@@ -6,6 +6,6 @@ services:
     ports:
       - "8888:8888"
     volumes:
-      - ./config.yaml:/app/config.yaml
+      - ./config.json:/app/config.json
     environment:
       - LOG_LEVEL=INFO

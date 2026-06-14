@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sys
-
-import yaml
 
 from ac_controller import AcController, MockAcController, RealAcController
 from ew11_client import EW11Client
@@ -16,7 +15,7 @@ from tcp_server import TcpServer
 
 def load_config(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        return json.load(f)
 
 
 def setup_logging(level_str: str) -> None:
@@ -29,9 +28,9 @@ def setup_logging(level_str: str) -> None:
 
 
 async def main() -> None:
-    config_path = os.environ.get("CONFIG_PATH", "/app/config.yaml")
+    config_path = os.environ.get("CONFIG_PATH", "/app/config.json")
     if not os.path.exists(config_path):
-        config_path = os.path.join(os.path.dirname(__file__), "..", "config.yaml")
+        config_path = os.path.join(os.path.dirname(__file__), "..", "config.json")
 
     config = load_config(config_path)
 
@@ -55,12 +54,14 @@ async def main() -> None:
     # 유닛별 StateStore 및 주소 파싱
     stores: dict[str, StateStore] = {}
     unit_addresses: dict[str, bytes] = {}
+    unit_labels: dict[str, str] = {}
     for unit in units_cfg:
         uid = str(unit["id"])
         addr_bytes = bytes.fromhex(str(unit["address"]))
         stores[uid] = StateStore()
         unit_addresses[uid] = addr_bytes
-        logger.info("unit registered: id=%s address=%s", uid, unit["address"])
+        unit_labels[uid] = unit.get("label", uid)
+        logger.info("unit registered: id=%s address=%s label=%s", uid, unit["address"], unit_labels[uid])
 
     controllers: dict[str, AcController] = {}
     ew11_task: asyncio.Task | None = None
@@ -80,7 +81,7 @@ async def main() -> None:
             controllers[uid] = RealAcController(unit_addresses[uid], store, ew11)
         ew11_task = asyncio.create_task(ew11.receive_loop(), name="ew11-recv")
 
-    server = TcpServer(host=host, port=port, controllers=controllers)
+    server = TcpServer(host=host, port=port, controllers=controllers, unit_labels=unit_labels)
     try:
         await server.serve_forever()
     finally:

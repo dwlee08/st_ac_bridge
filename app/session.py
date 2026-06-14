@@ -27,12 +27,14 @@ class Session:
         writer: StreamWriter,
         controllers: dict[str, AcController],
         peer: str,
+        unit_labels: dict[str, str] | None = None,
     ) -> None:
         self._reader = reader
         self._writer = writer
         self._controllers = controllers
         self._default_unit = next(iter(controllers))  # 첫 번째 유닛을 기본값으로
         self._peer = peer
+        self._unit_labels = unit_labels or {}
 
     async def run(self) -> None:
         logger.info("session started: %s", self._peer)
@@ -84,6 +86,13 @@ class Session:
 
         if cmd == "PING":
             return ok_response(req.id, {"pong": True})
+
+        if cmd == "LIST_UNITS":
+            units = [
+                {"id": uid, "label": self._unit_labels.get(uid, uid)}
+                for uid in self._controllers
+            ]
+            return ok_response(req.id, {"units": units})
 
         uid = p.get("unit_id", self._default_unit)
         ctrl, err = self._resolve_controller(p)
