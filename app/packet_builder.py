@@ -58,20 +58,31 @@ def build_set_fan_mode(dst: bytes, fan: str) -> bytes:
     return _build(dst, [(0x4006, bytes([_FAN_CODE[fan]]))])
 
 
-def build_set_vane_vertical(dst: bytes, on: bool) -> bytes:
-    return _build(dst, [(0x4011, bytes([0x01 if on else 0x00]))])
-
-
-def build_set_vane_horizontal(dst: bytes, on: bool) -> bytes:
-    return _build(dst, [(0x407E, bytes([0x01 if on else 0x00]))])
+def build_set_vane(dst: bytes, vertical: bool, horizontal: bool) -> bytes:
+    items = [
+        (0x4011, bytes([0x01 if vertical else 0x00])),
+        (0x407E, bytes([0x01 if horizontal else 0x00])),
+    ]
+    if vertical or horizontal:
+        items.append((0x4060, bytes([0x00])))   # wind_free off
+        items.append((0x4007, bytes([0x0E])))   # long_wind off
+    return _build(dst, items)
 
 
 def build_set_wind_free(dst: bytes, on: bool) -> bytes:
-    return _build(dst, [(0x4060, bytes([0x09 if on else 0x00]))])
+    items = [(0x4060, bytes([0x09 if on else 0x00]))]
+    if on:
+        items.append((0x4011, bytes([0x00])))   # vane_vertical off
+        items.append((0x407E, bytes([0x00])))   # vane_horizontal off
+    return _build(dst, items)
 
 
 def build_set_long_wind(dst: bytes, on: bool) -> bytes:
-    return _build(dst, [(0x4007, bytes([0x10 if on else 0x0E]))])
+    items = [(0x4007, bytes([0x10 if on else 0x0E]))]
+    if on:
+        items.append((0x4011, bytes([0x00])))   # vane_vertical off
+        items.append((0x407E, bytes([0x00])))   # vane_horizontal off
+    return _build(dst, items)
 
 
 def build_reconcile(dst: bytes, diffs: dict) -> bytes:

@@ -36,11 +36,7 @@ class AcController(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def set_vane_vertical(self, on: bool) -> bool:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def set_vane_horizontal(self, on: bool) -> bool:
+    async def set_vane(self, vertical: bool, horizontal: bool) -> bool:
         raise NotImplementedError
 
     @abstractmethod
@@ -81,14 +77,12 @@ class MockAcController(AcController):
         logger.info("mock: fan_mode=%s", fan)
         return True
 
-    async def set_vane_vertical(self, on: bool) -> bool:
-        await self._store.update(vane_vertical=on)
-        logger.info("mock: vane_vertical=%s", on)
-        return True
-
-    async def set_vane_horizontal(self, on: bool) -> bool:
-        await self._store.update(vane_horizontal=on)
-        logger.info("mock: vane_horizontal=%s", on)
+    async def set_vane(self, vertical: bool, horizontal: bool) -> bool:
+        updates = dict(vane_vertical=vertical, vane_horizontal=horizontal)
+        if vertical or horizontal:
+            updates.update(wind_free=False, long_wind=False)
+        await self._store.update(**updates)
+        logger.info("mock: vane vertical=%s horizontal=%s", vertical, horizontal)
         return True
 
     async def set_wind_free(self, on: bool) -> bool:
@@ -146,18 +140,14 @@ class RealAcController(AcController):
         await self._ew11.send_with_ack(pb.build_set_fan_mode(self._dst, fan))
         return True
 
-    async def set_vane_vertical(self, on: bool) -> bool:
-        await self._store.set_desired(vane_vertical=on, wind_free=False, long_wind=False)
+    async def set_vane(self, vertical: bool, horizontal: bool) -> bool:
+        desired = dict(vane_vertical=vertical, vane_horizontal=horizontal)
+        if vertical or horizontal:
+            desired.update(wind_free=False, long_wind=False)
+        await self._store.set_desired(**desired)
         if not await self._powered_on():
             return True
-        await self._ew11.send_with_ack(pb.build_set_vane_vertical(self._dst, on))
-        return True
-
-    async def set_vane_horizontal(self, on: bool) -> bool:
-        await self._store.set_desired(vane_horizontal=on, wind_free=False, long_wind=False)
-        if not await self._powered_on():
-            return True
-        await self._ew11.send_with_ack(pb.build_set_vane_horizontal(self._dst, on))
+        await self._ew11.send_with_ack(pb.build_set_vane(self._dst, vertical, horizontal))
         return True
 
     async def set_wind_free(self, on: bool) -> bool:

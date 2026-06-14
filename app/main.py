@@ -45,7 +45,7 @@ async def main() -> None:
 
     units_cfg = config.get("units", [])
     if not units_cfg:
-        logger.error("config.yaml에 units 목록이 없습니다.")
+        logger.error("config.json에 units 목록이 없습니다.")
         sys.exit(1)
 
     ctrl_mode = os.environ.get("AC_MODE") or config.get("controller_mode", "real")

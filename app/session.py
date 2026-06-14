@@ -141,18 +141,12 @@ class Session:
             await ctrl.set_fan_mode(fan)
             return ok_response(req.id)
 
-        if cmd == "SET_VANE_VERTICAL":
-            on = p.get("on")
-            if not isinstance(on, bool):
-                return err_response(req.id, "params.on must be boolean")
-            await ctrl.set_vane_vertical(on)
-            return ok_response(req.id)
-
-        if cmd == "SET_VANE_HORIZONTAL":
-            on = p.get("on")
-            if not isinstance(on, bool):
-                return err_response(req.id, "params.on must be boolean")
-            await ctrl.set_vane_horizontal(on)
+        if cmd == "SET_VANE":
+            vertical   = p.get("vertical")
+            horizontal = p.get("horizontal")
+            if not isinstance(vertical, bool) or not isinstance(horizontal, bool):
+                return err_response(req.id, "params.vertical and horizontal must be boolean")
+            await ctrl.set_vane(vertical, horizontal)
             return ok_response(req.id)
 
         if cmd == "SET_WIND_FREE":
