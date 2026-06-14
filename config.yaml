@@ -1,0 +1,23 @@
+server:
+  host: "0.0.0.0"
+  port: 8888
+
+ew11:
+  host: "192.168.0.38"
+  port: 8899
+
+units:
+  - id: "unit_0"
+    address: "200000"
+  - id: "unit_1"
+    address: "200001"
+  - id: "unit_2"
+    address: "200002"
+  - id: "unit_3"
+    address: "200003"
+  - id: "unit_4"
+    address: "200004"
+
+controller_mode: real   # real | mock
+
+log_level: INFO

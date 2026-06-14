@@ -1,0 +1,11 @@
+services:
+  ac-bridge:
+    build: .
+    container_name: ac-bridge-server
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./config.yaml:/app/config.yaml
+    environment:
+      - LOG_LEVEL=INFO
