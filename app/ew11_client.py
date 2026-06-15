@@ -3,19 +3,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 
 import packet_builder as pb
+from ac_controller import RealAcController
 from packet_parser import MSG_TYPE_ACK, MSG_TYPE_STATUS, ParsedPacket, extract_packets
 from state_decoder import decode_codes
 from state_store import StateStore
 
+if TYPE_CHECKING:
+    from ac_controller import AcController
+
 logger = logging.getLogger(__name__)
 
-OUTDOOR_SRC      = bytes([0x10, 0x00, 0x00])
-MAX_BUF          = 8192
-RECONNECT_DELAY  = 5
-BUS_IDLE_MS      = 100   # TX 전 버스 조용히 대기할 시간 (ms)
-RECONCILE_INTERVAL = 5   # 주기적 reconcile 간격 (초)
+OUTDOOR_SRC        = bytes([0x10, 0x00, 0x00])
+INDOOR_SRC_PREFIX  = 0x20   # 실내기 주소 첫 바이트
+MAX_BUF            = 8192
+RECONNECT_DELAY    = 5
+BUS_IDLE_MS        = 100
+RECONCILE_INTERVAL = 5
 
 
 class EW11Client:
@@ -25,12 +31,16 @@ class EW11Client:
         port: int,
         stores: dict[str, StateStore],
         unit_addresses: dict[str, bytes],
+        controllers: dict[str, AcController] | None = None,
+        unit_labels: dict[str, str] | None = None,
     ) -> None:
         self._host = host
         self._port = port
         self._stores = stores
         self._addr_to_unit: dict[bytes, str] = {v: k for k, v in unit_addresses.items()}
         self._unit_to_addr: dict[str, bytes] = dict(unit_addresses)
+        self._controllers = controllers
+        self._unit_labels = unit_labels
         self._writer: asyncio.StreamWriter | None = None
         self._buf = bytearray()
         self._last_rx_time: float = 0.0
@@ -89,7 +99,7 @@ class EW11Client:
             await asyncio.sleep(RECONCILE_INTERVAL)
             if not self.is_connected:
                 continue
-            for unit_id, store in self._stores.items():
+            for unit_id, store in list(self._stores.items()):
                 try:
                     current = await store.get()
                     if not current.power:
@@ -153,6 +163,21 @@ class EW11Client:
             logger.info("EW11 reconcile TX: %s", pkt.hex())
             await self.send(pkt)
 
+    def _auto_register(self, addr: bytes) -> str:
+        n = len(self._stores) + 1
+        unit_id = addr.hex()
+        label = f"에어컨 {n}"
+        store = StateStore()
+        self._stores[unit_id] = store
+        self._addr_to_unit[addr] = unit_id
+        self._unit_to_addr[unit_id] = addr
+        if self._unit_labels is not None:
+            self._unit_labels[unit_id] = label
+        if self._controllers is not None:
+            self._controllers[unit_id] = RealAcController(addr, store, self)
+        logger.info("auto-registered unit: id=%s addr=%s label=%s", unit_id, addr.hex(), label)
+        return unit_id
+
     async def _handle_packet(self, pkt: ParsedPacket) -> None:
         if pkt.src == OUTDOOR_SRC:
             return
@@ -164,8 +189,11 @@ class EW11Client:
 
         unit_id = self._addr_to_unit.get(pkt.src)
         if unit_id is None:
-            logger.debug("unknown src: %s", pkt.src.hex())
-            return
+            if pkt.src[0] == INDOOR_SRC_PREFIX:
+                unit_id = self._auto_register(pkt.src)
+            else:
+                logger.debug("unknown src: %s", pkt.src.hex())
+                return
         logger.info("EW11 RX C014: unit=%s codes=%s", unit_id, [(hex(c), v.hex()) for c, v in pkt.codes])
 
         store = self._stores.get(unit_id)

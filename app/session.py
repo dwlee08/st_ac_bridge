@@ -32,7 +32,7 @@ class Session:
         self._reader = reader
         self._writer = writer
         self._controllers = controllers
-        self._default_unit = next(iter(controllers))  # 첫 번째 유닛을 기본값으로
+        self._default_unit = next(iter(controllers), None)
         self._peer = peer
         self._unit_labels = unit_labels or {}
 

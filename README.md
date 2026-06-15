@@ -51,10 +51,6 @@ nano config.json
     "host": "192.168.0.38",
     "port": 8899
   },
-  "units": [
-    { "id": "unit_0", "address": "200000", "label": "에어컨 1호기" },
-    { "id": "unit_1", "address": "200001", "label": "에어컨 2호기" }
-  ],
   "controller_mode": "real",
   "log_level": "INFO"
 }
@@ -68,23 +64,16 @@ nano config.json
 | `server.port` | 브릿지 서버 포트. Edge Driver 설정과 일치해야 함 |
 | `ew11.host` | EW11 장치 IP 주소 |
 | `ew11.port` | EW11 TCP 포트 (기본값 `8899`) |
-| `units` | 실내기 목록. `id`는 임의 문자열, `address`는 RS485 주소 (hex 6자리), `label`은 SmartThings에 표시될 초기 이름 (앱에서 나중에 변경 가능) |
 | `controller_mode` | `real` = 실제 EW11 사용, `mock` = 테스트용 더미 |
 | `log_level` | `DEBUG` / `INFO` / `WARNING` |
 
-#### 실내기 RS485 주소
+#### 실내기 자동 검색
 
-삼성 시스템 에어컨 실내기 주소는 순서대로 할당됩니다.
+브릿지 서버는 RS485 버스를 모니터링하다가 실내기에서 첫 상태 패킷(C014)을 수신하는 순간 자동으로 등록합니다. 별도로 주소를 입력할 필요가 없습니다.
 
-| 실내기 | address |
-|--------|---------|
-| 1호기 | `200000` |
-| 2호기 | `200001` |
-| 3호기 | `200002` |
-| 4호기 | `200003` |
-| 5호기 | `200004` |
-
-실내기가 2대라면 `units`에 `unit_0`, `unit_1` 두 항목만 남기면 됩니다.
+- 등록 순서대로 **에어컨 1**, **에어컨 2**, ... 라벨이 자동 부여됩니다 (SmartThings 앱에서 나중에 변경 가능)
+- 서버 시작 후 약 **5분 이내**에 모든 실내기의 상태 패킷이 수신되어 등록이 완료됩니다
+- SmartThings 디바이스 디스커버리는 등록이 완료된 뒤 실행하세요
 
 ### 3. 실행
 
@@ -103,8 +92,9 @@ docker logs -f ac-bridge-server
 
 ```
 2026-01-01T00:00:00 INFO main AC Bridge Server starting — mode=real
-2026-01-01T00:00:00 INFO main unit registered: id=unit_0 address=200000
 2026-01-01T00:00:00 INFO ew11_client EW11 connected: 192.168.0.38:8899
+2026-01-01T00:00:05 INFO ew11_client auto-registered unit: id=200000 addr=200000 label=에어컨 1
+2026-01-01T00:00:06 INFO ew11_client auto-registered unit: id=200001 addr=200001 label=에어컨 2
 ```
 
 ---
@@ -132,7 +122,7 @@ SmartThings Edge Driver 설정에서 다음을 입력합니다.
 | 서버 IP | 브릿지 서버 IP |
 | 서버 Port | `config.json`의 `server.port` (기본 `8888`) |
 
-디바이스 디스커버리 시 `units`에 등록된 실내기가 SmartThings에 자동으로 추가됩니다.
+브릿지 서버 시작 후 약 5분 뒤 디바이스 디스커버리를 실행하면 자동 검색된 실내기가 SmartThings에 추가됩니다.
 
 ---
 

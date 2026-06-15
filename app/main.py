@@ -43,28 +43,24 @@ async def main() -> None:
     host = server_cfg.get("host", "0.0.0.0")
     port = int(server_cfg.get("port", 8888))
 
-    units_cfg = config.get("units", [])
-    if not units_cfg:
-        logger.error("config.json에 units 목록이 없습니다.")
-        sys.exit(1)
-
     ctrl_mode = os.environ.get("AC_MODE") or config.get("controller_mode", "real")
     logger.info("AC Bridge Server starting — mode=%s", ctrl_mode)
 
-    # 유닛별 StateStore 및 주소 파싱
     stores: dict[str, StateStore] = {}
     unit_addresses: dict[str, bytes] = {}
     unit_labels: dict[str, str] = {}
+    controllers: dict[str, AcController] = {}
+    ew11_task: asyncio.Task | None = None
+
+    # units가 명시된 경우 사전 등록 (mock 모드 또는 명시적 고정 설정)
+    units_cfg = config.get("units", [])
     for unit in units_cfg:
         uid = str(unit["id"])
         addr_bytes = bytes.fromhex(str(unit["address"]))
         stores[uid] = StateStore()
         unit_addresses[uid] = addr_bytes
         unit_labels[uid] = unit.get("label", uid)
-        logger.info("unit registered: id=%s address=%s label=%s", uid, unit["address"], unit_labels[uid])
-
-    controllers: dict[str, AcController] = {}
-    ew11_task: asyncio.Task | None = None
+        logger.info("unit pre-registered: id=%s address=%s label=%s", uid, unit["address"], unit_labels[uid])
 
     if ctrl_mode == "mock":
         for uid, store in stores.items():
@@ -76,6 +72,8 @@ async def main() -> None:
             port=int(ew11_cfg["port"]),
             stores=stores,
             unit_addresses=unit_addresses,
+            controllers=controllers,
+            unit_labels=unit_labels,
         )
         for uid, store in stores.items():
             controllers[uid] = RealAcController(unit_addresses[uid], store, ew11)
