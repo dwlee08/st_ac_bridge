@@ -23,6 +23,10 @@ def decode_codes(codes: list[tuple[int, bytes]]) -> dict:
             updates["long_wind"] = value[0] == 0x10
         elif code == 0x4060:
             updates["wind_free"] = value[0] == 0x09
+        elif code == 0x4038:
+            updates["humidity"] = value[0]
+        elif code == 0x4111:
+            updates["auto_clean"] = value[0] == 0x01
         elif code == 0x4201:
             updates["target_temp"] = int.from_bytes(value, "big") / 10
         elif code == 0x4203:

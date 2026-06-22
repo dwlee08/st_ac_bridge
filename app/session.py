@@ -163,6 +163,13 @@ class Session:
             await ctrl.set_long_wind(on)
             return ok_response(req.id)
 
+        if cmd == "SET_AUTO_CLEAN":
+            on = p.get("on")
+            if not isinstance(on, bool):
+                return err_response(req.id, "params.on must be boolean")
+            await ctrl.set_auto_clean(on)
+            return ok_response(req.id)
+
         return err_response(req.id, f"unknown command: {cmd}")
 
     async def _send(self, data: str) -> None:

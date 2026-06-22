@@ -47,6 +47,10 @@ class AcController(ABC):
     async def set_long_wind(self, on: bool) -> bool:
         raise NotImplementedError
 
+    @abstractmethod
+    async def set_auto_clean(self, on: bool) -> bool:
+        raise NotImplementedError
+
 
 class MockAcController(AcController):
     """실제 EW11 없이 서버 전체를 테스트하기 위한 더미 구현."""
@@ -93,6 +97,11 @@ class MockAcController(AcController):
     async def set_long_wind(self, on: bool) -> bool:
         await self._store.update(long_wind=on)
         logger.info("mock: long_wind=%s", on)
+        return True
+
+    async def set_auto_clean(self, on: bool) -> bool:
+        await self._store.update(auto_clean=on)
+        logger.info("mock: auto_clean=%s", on)
         return True
 
 
@@ -170,4 +179,11 @@ class RealAcController(AcController):
         if not await self._powered_on():
             return True
         await self._ew11.send_with_ack(pb.build_set_long_wind(self._dst, on))
+        return True
+
+    async def set_auto_clean(self, on: bool) -> bool:
+        await self._store.set_desired(auto_clean=on)
+        if not await self._powered_on():
+            return True
+        await self._ew11.send_with_ack(pb.build_set_auto_clean(self._dst, on))
         return True

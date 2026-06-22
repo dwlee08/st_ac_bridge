@@ -85,6 +85,10 @@ def build_set_long_wind(dst: bytes, on: bool) -> bytes:
     return _build(dst, items)
 
 
+def build_set_auto_clean(dst: bytes, on: bool) -> bytes:
+    return _build(dst, [(0x4111, bytes([0x01 if on else 0x00]))])
+
+
 def build_reconcile(dst: bytes, diffs: dict) -> bytes:
     """desired와 reported의 차이(diffs)를 C013 한 패킷으로 빌드."""
     items: list[tuple[int, bytes]] = []
@@ -104,4 +108,6 @@ def build_reconcile(dst: bytes, diffs: dict) -> bytes:
         items.append((0x4060, bytes([0x09 if diffs["wind_free"] else 0x00])))
     if "long_wind" in diffs:
         items.append((0x4007, bytes([0x10 if diffs["long_wind"] else 0x0E])))
+    if "auto_clean" in diffs:
+        items.append((0x4111, bytes([0x01 if diffs["auto_clean"] else 0x00])))
     return _build(dst, items) if items else b""

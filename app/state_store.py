@@ -16,15 +16,21 @@ class AcStatus:
     vane_horizontal: bool = False
     wind_free: bool = False
     long_wind: bool = False
+    auto_clean: bool = False
+    humidity: int | None = None   # 읽기 전용, 센서 탑재 모델만 수신
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        if d["humidity"] is None:
+            del d["humidity"]
+        return d
 
 
-# reconcile 대상 필드 (current_temp 같은 읽기 전용 제외)
+# reconcile 대상 필드 (읽기 전용 제외)
 _RECONCILE_FIELDS = frozenset({
     "power", "mode", "target_temp",
-    "fan_mode", "vane_vertical", "vane_horizontal", "wind_free", "long_wind",
+    "fan_mode", "vane_vertical", "vane_horizontal",
+    "wind_free", "long_wind", "auto_clean",
 })
 
 
