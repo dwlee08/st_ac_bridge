@@ -40,8 +40,8 @@ async def main() -> None:
     logger = logging.getLogger(__name__)
 
     server_cfg = config.get("server", {})
-    host = server_cfg.get("host", "0.0.0.0")
-    port = int(server_cfg.get("port", 8888))
+    host = os.environ.get("SERVER_HOST") or server_cfg.get("host", "0.0.0.0")
+    port = int(os.environ.get("SERVER_PORT") or server_cfg.get("port", 8888))
 
     ctrl_mode = os.environ.get("AC_MODE") or config.get("controller_mode", "real")
     logger.info("AC Bridge Server starting — mode=%s", ctrl_mode)
@@ -67,9 +67,14 @@ async def main() -> None:
             controllers[uid] = MockAcController(store)
     else:
         ew11_cfg = config.get("ew11", {})
+        ew11_host = os.environ.get("EW11_HOST") or ew11_cfg.get("host")
+        ew11_port = int(os.environ.get("EW11_PORT") or ew11_cfg.get("port", 8899))
+        if not ew11_host:
+            logger.error("EW11 host not configured. Set ew11.host in config.json or EW11_HOST env var.")
+            sys.exit(1)
         ew11 = EW11Client(
-            host=ew11_cfg["host"],
-            port=int(ew11_cfg["port"]),
+            host=ew11_host,
+            port=ew11_port,
             stores=stores,
             unit_addresses=unit_addresses,
             controllers=controllers,

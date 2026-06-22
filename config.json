@@ -4,9 +4,10 @@
     "port": 8888
   },
   "ew11": {
-    "host": "192.168.0.38",
+    "host": "192.168.x.x",
     "port": 8899
   },
   "controller_mode": "real",
-  "log_level": "INFO"
+  "log_level": "INFO",
+  "units": []
 }
