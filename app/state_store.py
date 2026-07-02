@@ -26,6 +26,43 @@ class AcStatus:
         return d
 
 
+@dataclass
+class OutdoorStatus:
+    """실외기(주소 10:00:00) C014 브로드캐스트 기반 상태. 모두 읽기 전용.
+
+    실외기 1대가 실내기 여러 대를 담당하므로 유닛별이 아닌 시스템 공용 상태다.
+    미수신 필드는 None으로 두고 to_dict()에서 생략한다.
+    """
+    outdoor_temp: float | None = None          # 0x8204 외기 온도 ℃
+    power_w: int | None = None                 # 0x8413 순시 전력 W (전 모듈 합)
+    cumulative_energy_wh: int | None = None    # 0x8414 누적 전력량 Wh
+    current_a: float | None = None             # 0x8217 실외기 전류 A
+    voltage_v: float | None = None             # 0x24FC 전압 V
+    odu_mode: str | None = None                # 0x8001 실외기 운전 모드
+    heat_cool: str | None = None               # 0x8003 냉/난방 방향
+
+    def to_dict(self) -> dict:
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+
+class OutdoorStore:
+    """실외기 상태 저장소. C014 수신으로만 갱신되는 단일 공용 상태."""
+
+    def __init__(self) -> None:
+        self._status = OutdoorStatus()
+        self._lock = asyncio.Lock()
+
+    async def get(self) -> OutdoorStatus:
+        async with self._lock:
+            return OutdoorStatus(**asdict(self._status))
+
+    async def update(self, **kwargs) -> None:
+        async with self._lock:
+            for k, v in kwargs.items():
+                if hasattr(self._status, k):
+                    setattr(self._status, k, v)
+
+
 # reconcile 대상 필드 (읽기 전용 제외)
 _RECONCILE_FIELDS = frozenset({
     "power", "mode", "target_temp",
