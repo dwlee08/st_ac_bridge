@@ -9,7 +9,7 @@ import sys
 
 from ac_controller import AcController, MockAcController, RealAcController
 from ew11_client import EW11Client
-from state_store import StateStore
+from state_store import OutdoorStore, StateStore
 from tcp_server import TcpServer
 
 
@@ -50,6 +50,7 @@ async def main() -> None:
     unit_addresses: dict[str, bytes] = {}
     unit_labels: dict[str, str] = {}
     controllers: dict[str, AcController] = {}
+    outdoor_store = OutdoorStore()   # 실외기 공용 상태 (전력/에너지/외기온도)
     ew11_task: asyncio.Task | None = None
 
     # units가 명시된 경우 사전 등록 (mock 모드 또는 명시적 고정 설정)
@@ -79,12 +80,16 @@ async def main() -> None:
             unit_addresses=unit_addresses,
             controllers=controllers,
             unit_labels=unit_labels,
+            outdoor_store=outdoor_store,
         )
         for uid, store in stores.items():
             controllers[uid] = RealAcController(unit_addresses[uid], store, ew11)
         ew11_task = asyncio.create_task(ew11.receive_loop(), name="ew11-recv")
 
-    server = TcpServer(host=host, port=port, controllers=controllers, unit_labels=unit_labels)
+    server = TcpServer(
+        host=host, port=port, controllers=controllers,
+        unit_labels=unit_labels, outdoor_store=outdoor_store,
+    )
     try:
         await server.serve_forever()
     finally:

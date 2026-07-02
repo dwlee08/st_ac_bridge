@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING
 import packet_builder as pb
 from ac_controller import RealAcController
 from packet_parser import MSG_TYPE_ACK, MSG_TYPE_STATUS, ParsedPacket, extract_packets
-from state_decoder import decode_codes
-from state_store import StateStore
+from state_decoder import decode_codes, decode_outdoor_codes
+from state_store import OutdoorStore, StateStore
 
 if TYPE_CHECKING:
     from ac_controller import AcController
@@ -33,10 +33,12 @@ class EW11Client:
         unit_addresses: dict[str, bytes],
         controllers: dict[str, AcController] | None = None,
         unit_labels: dict[str, str] | None = None,
+        outdoor_store: OutdoorStore | None = None,
     ) -> None:
         self._host = host
         self._port = port
         self._stores = stores
+        self._outdoor_store = outdoor_store
         self._addr_to_unit: dict[bytes, str] = {v: k for k, v in unit_addresses.items()}
         self._unit_to_addr: dict[str, bytes] = dict(unit_addresses)
         self._controllers = controllers
@@ -180,6 +182,12 @@ class EW11Client:
 
     async def _handle_packet(self, pkt: ParsedPacket) -> None:
         if pkt.src == OUTDOOR_SRC:
+            # 실외기는 C014 브로드캐스트로 전력/에너지/외기온도 등을 전송.
+            if pkt.msg_type == MSG_TYPE_STATUS and self._outdoor_store is not None:
+                updates = decode_outdoor_codes(pkt.codes)
+                if updates:
+                    await self._outdoor_store.update(**updates)
+                    logger.info("EW11 RX C014 outdoor: %s", updates)
             return
         if pkt.msg_type == MSG_TYPE_ACK:
             self._ack_event.set()

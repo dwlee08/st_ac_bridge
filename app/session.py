@@ -6,6 +6,7 @@ import logging
 from asyncio import StreamReader, StreamWriter
 
 from ac_controller import AcController
+from state_store import OutdoorStore
 from protocol import (
     TEMP_MAX,
     TEMP_MIN,
@@ -28,6 +29,7 @@ class Session:
         controllers: dict[str, AcController],
         peer: str,
         unit_labels: dict[str, str] | None = None,
+        outdoor_store: OutdoorStore | None = None,
     ) -> None:
         self._reader = reader
         self._writer = writer
@@ -35,6 +37,7 @@ class Session:
         self._default_unit = next(iter(controllers), None)
         self._peer = peer
         self._unit_labels = unit_labels or {}
+        self._outdoor_store = outdoor_store
 
     async def run(self) -> None:
         logger.info("session started: %s", self._peer)
@@ -94,6 +97,12 @@ class Session:
             ]
             return ok_response(req.id, {"units": units})
 
+        if cmd == "STATUS_OUTDOOR":
+            if self._outdoor_store is None:
+                return err_response(req.id, "outdoor status not available")
+            status = await self._outdoor_store.get()
+            return ok_response(req.id, status.to_dict())
+
         uid = p.get("unit_id", self._default_unit)
         ctrl, err = self._resolve_controller(p)
         if ctrl is None:
@@ -103,6 +112,14 @@ class Session:
             status = await ctrl.get_status()
             data = status.to_dict()
             data["unit_id"] = uid
+            # 시스템 순시전력(실외기 합산 실측)을 공유값으로 echo.
+            # 각 실내기 디바이스가 동일 값을 powerMeter로 노출(중복 표시는 무방).
+            # 누적 에너지(powerConsumptionReport)는 중복 합산 방지를 위해
+            # 실내기 STATUS에 넣지 않고 STATUS_OUTDOOR(Gateway 전용)로만 제공한다.
+            if self._outdoor_store is not None:
+                outdoor = await self._outdoor_store.get()
+                if outdoor.power_w is not None:
+                    data["system_power_w"] = outdoor.power_w
             return ok_response(req.id, data)
 
         if cmd == "SET_POWER":
