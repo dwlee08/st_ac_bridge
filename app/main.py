@@ -9,7 +9,9 @@ import sys
 
 from ac_controller import AcController, MockAcController, RealAcController
 from ew11_client import EW11Client
+from icool import IcoolManager
 from state_store import OutdoorStore, StateStore
+from stream import StreamHub
 from tcp_server import TcpServer
 
 
@@ -86,16 +88,25 @@ async def main() -> None:
             controllers[uid] = RealAcController(unit_addresses[uid], store, ew11)
         ew11_task = asyncio.create_task(ew11.receive_loop(), name="ew11-recv")
 
+    # 인텔리전트 냉방 매니저 + 제어 루프 (상주 프로세스에서 온도 제어/타이머/종료 담당)
+    icool = IcoolManager(controllers)
+    icool_task = asyncio.create_task(icool.run_loop(), name="icool-loop")
+
+    # 이벤트 스트림 허브 (구독자에게 상태 변경 push) + 변경 감지 스윕
+    hub = StreamHub(controllers, icool, outdoor_store)
+    hub_task = asyncio.create_task(hub.run_loop(), name="stream-hub")
+
     server = TcpServer(
         host=host, port=port, controllers=controllers,
-        unit_labels=unit_labels, outdoor_store=outdoor_store,
+        unit_labels=unit_labels, outdoor_store=outdoor_store, icool=icool, hub=hub,
     )
     try:
         await server.serve_forever()
     finally:
-        if ew11_task:
-            ew11_task.cancel()
-            await asyncio.gather(ew11_task, return_exceptions=True)
+        for task in (ew11_task, icool_task, hub_task):
+            if task:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
 
 if __name__ == "__main__":

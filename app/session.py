@@ -6,7 +6,9 @@ import logging
 from asyncio import StreamReader, StreamWriter
 
 from ac_controller import AcController
+from icool import IcoolManager
 from state_store import OutdoorStore
+from stream import StreamHub
 from protocol import (
     TEMP_MAX,
     TEMP_MIN,
@@ -30,6 +32,8 @@ class Session:
         peer: str,
         unit_labels: dict[str, str] | None = None,
         outdoor_store: OutdoorStore | None = None,
+        icool: IcoolManager | None = None,
+        hub: StreamHub | None = None,
     ) -> None:
         self._reader = reader
         self._writer = writer
@@ -38,6 +42,9 @@ class Session:
         self._peer = peer
         self._unit_labels = unit_labels or {}
         self._outdoor_store = outdoor_store
+        self._icool = icool
+        self._hub = hub
+        self._subscribed = False
 
     async def run(self) -> None:
         logger.info("session started: %s", self._peer)
@@ -56,6 +63,8 @@ class Session:
         except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError):
             pass
         finally:
+            if self._subscribed and self._hub is not None:
+                await self._hub.remove_subscriber(self._writer)
             logger.info("session closed: %s", self._peer)
             self._writer.close()
 
@@ -72,6 +81,8 @@ class Session:
 
         logger.info("cmd=%s params=%s from %s", req.cmd, req.params, self._peer)
         resp = await self._dispatch(req)
+        if resp is None:   # SUBSCRIBE 등 응답 없이 스트림으로 전환되는 명령
+            return
         logger.info("resp ok=%s from %s", resp.ok, self._peer)
         await self._send(resp.serialize())
 
@@ -89,6 +100,14 @@ class Session:
 
         if cmd == "PING":
             return ok_response(req.id, {"pong": True})
+
+        if cmd == "SUBSCRIBE":
+            # 이 연결을 이벤트 스트림으로 전환. 이후 hub가 스냅샷 + 변경분을 push.
+            if self._hub is None:
+                return err_response(req.id, "stream not available")
+            await self._hub.add_subscriber(self._writer)
+            self._subscribed = True
+            return None
 
         if cmd == "LIST_UNITS":
             units = [
@@ -120,6 +139,9 @@ class Session:
                 outdoor = await self._outdoor_store.get()
                 if outdoor.power_w is not None:
                     data["system_power_w"] = outdoor.power_w
+            # 인텔리전트 냉방 상태(활성/남은시간/문구)를 STATUS에 실어 엣지가 그대로 표시
+            if self._icool is not None:
+                data.update(self._icool.status(uid))
             return ok_response(req.id, data)
 
         if cmd == "SET_POWER":
@@ -186,6 +208,34 @@ class Session:
                 return err_response(req.id, "params.on must be boolean")
             await ctrl.set_auto_clean(on)
             return ok_response(req.id)
+
+        # 인텔리전트 냉방: on=시작(목표/제한시간), off=종료. 실제 제어는 브릿지 루프가 담당.
+        if cmd == "SET_ICOOL":
+            if self._icool is None:
+                return err_response(req.id, "icool not available")
+            on = p.get("on")
+            if not isinstance(on, bool):
+                return err_response(req.id, "params.on must be boolean")
+            if on:
+                target = p.get("target")
+                duration = p.get("duration")
+                if target is not None and not isinstance(target, (int, float)):
+                    return err_response(req.id, "params.target must be number")
+                if duration is not None and not isinstance(duration, (int, float)):
+                    return err_response(req.id, "params.duration must be number")
+                await self._icool.start(uid, target=target, duration_min=duration)
+            else:
+                await self._icool.stop(uid)
+            return ok_response(req.id, self._icool.status(uid))
+
+        if cmd == "SET_ICOOL_DURATION":
+            if self._icool is None:
+                return err_response(req.id, "icool not available")
+            duration = p.get("duration")
+            if not isinstance(duration, (int, float)):
+                return err_response(req.id, "params.duration must be number")
+            await self._icool.set_duration(uid, int(duration))
+            return ok_response(req.id, self._icool.status(uid))
 
         return err_response(req.id, f"unknown command: {cmd}")
 

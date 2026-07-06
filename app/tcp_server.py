@@ -6,8 +6,10 @@ import logging
 from asyncio import StreamReader, StreamWriter
 
 from ac_controller import AcController
+from icool import IcoolManager
 from session import Session
 from state_store import OutdoorStore
+from stream import StreamHub
 
 logger = logging.getLogger(__name__)
 
@@ -20,12 +22,16 @@ class TcpServer:
         controllers: dict[str, AcController],
         unit_labels: dict[str, str] | None = None,
         outdoor_store: OutdoorStore | None = None,
+        icool: IcoolManager | None = None,
+        hub: StreamHub | None = None,
     ) -> None:
         self._host = host
         self._port = port
         self._controllers = controllers
         self._unit_labels = unit_labels or {}
         self._outdoor_store = outdoor_store
+        self._icool = icool
+        self._hub = hub
         self._server: asyncio.Server | None = None
 
     async def start(self) -> None:
@@ -48,6 +54,6 @@ class TcpServer:
         peer_str = f"{peer[0]}:{peer[1]}" if isinstance(peer, tuple) else str(peer)
         session = Session(
             reader, writer, self._controllers, peer_str,
-            self._unit_labels, self._outdoor_store,
+            self._unit_labels, self._outdoor_store, self._icool, self._hub,
         )
         await session.run()
