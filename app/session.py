@@ -183,8 +183,19 @@ class Session:
         if cmd == "SET_VANE":
             vertical   = p.get("vertical")
             horizontal = p.get("horizontal")
-            if not isinstance(vertical, bool) or not isinstance(horizontal, bool):
-                return err_response(req.id, "params.vertical and horizontal must be boolean")
+            if vertical is None and horizontal is None:
+                return err_response(req.id, "params.vertical or horizontal required")
+            if vertical is not None and not isinstance(vertical, bool):
+                return err_response(req.id, "params.vertical must be boolean")
+            if horizontal is not None and not isinstance(horizontal, bool):
+                return err_response(req.id, "params.horizontal must be boolean")
+            # 생략된 축은 현재 상태(source of truth)를 유지 → 상하/좌우 독립 제어.
+            if vertical is None or horizontal is None:
+                cur = await ctrl.get_status()
+                if vertical is None:
+                    vertical = cur.vane_vertical
+                if horizontal is None:
+                    horizontal = cur.vane_horizontal
             await ctrl.set_vane(vertical, horizontal)
             return ok_response(req.id)
 
