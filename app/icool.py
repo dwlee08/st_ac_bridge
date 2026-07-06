@@ -52,8 +52,19 @@ class IcoolState:
 class IcoolManager:
     def __init__(self, controllers: dict[str, AcController]) -> None:
         self._controllers = controllers
-        self._states: dict[str, IcoolState] = {uid: IcoolState() for uid in controllers}
+        # 유닛은 C014로 나중에 auto-register될 수 있으므로 상태는 지연 생성(스냅샷 금지).
+        self._states: dict[str, IcoolState] = {}
         self._lock = asyncio.Lock()
+
+    def _state(self, uid: str) -> IcoolState | None:
+        """등록된 유닛의 icool 상태를 (필요 시 생성해) 반환. 미등록이면 None."""
+        if uid not in self._controllers:
+            return None
+        st = self._states.get(uid)
+        if st is None:
+            st = IcoolState()
+            self._states[uid] = st
+        return st
 
     # ── STATUS 노출용 ────────────────────────────────────────────
     def status(self, uid: str) -> dict:
@@ -71,8 +82,9 @@ class IcoolManager:
     async def start(self, uid: str, target: float | None = None,
                     duration_min: int | None = None) -> None:
         ctrl = self._controllers.get(uid)
-        st = self._states.get(uid)
+        st = self._state(uid)
         if ctrl is None or st is None:
+            logger.warning("[icool] start: unknown unit %s", uid)
             return
         async with self._lock:
             if target is not None:
