@@ -51,6 +51,15 @@ class AcController(ABC):
     async def set_auto_clean(self, on: bool) -> bool:
         raise NotImplementedError
 
+    @abstractmethod
+    async def apply_settings(self, **fields) -> bool:
+        """여러 설정을 한 번에 적용 (실기기는 C013 한 패킷 → 조작음 1회).
+
+        fields는 AcStatus 필드명 기준. wind_free↔vane 같은 연동 필드는
+        호출자가 최종 조합을 명시적으로 넘긴다 (개별 setter의 부수효과 없음).
+        """
+        raise NotImplementedError
+
 
 class MockAcController(AcController):
     """실제 EW11 없이 서버 전체를 테스트하기 위한 더미 구현."""
@@ -102,6 +111,11 @@ class MockAcController(AcController):
     async def set_auto_clean(self, on: bool) -> bool:
         await self._store.update(auto_clean=on)
         logger.info("mock: auto_clean=%s", on)
+        return True
+
+    async def apply_settings(self, **fields) -> bool:
+        await self._store.update(**fields)
+        logger.info("mock: apply %s", fields)
         return True
 
 
@@ -186,4 +200,16 @@ class RealAcController(AcController):
         if not await self._powered_on():
             return True
         await self._ew11.send_with_ack(pb.build_set_auto_clean(self._dst, on))
+        return True
+
+    async def apply_settings(self, **fields) -> bool:
+        await self._store.set_desired(**fields)
+        # 전원을 켜는 요청이 아니고 현재 꺼져 있으면 desired만 기록 (개별 setter와 동일)
+        if not fields.get("power") and not await self._powered_on():
+            return True
+        pkt = pb.build_reconcile(self._dst, fields)
+        if not pkt:
+            return True
+        logger.info("TX APPLY %s pkt=%s", fields, pkt.hex())
+        await self._ew11.send_with_ack(pkt)
         return True
