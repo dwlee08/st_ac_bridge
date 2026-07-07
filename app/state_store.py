@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,9 @@ class OutdoorStore:
 
     async def get(self) -> OutdoorStatus:
         async with self._lock:
-            return OutdoorStatus(**asdict(self._status))
+            # 필드가 전부 immutable 스칼라라는 전제의 얕은 복사(핫패스).
+            # 가변 필드(list/dict)를 추가하게 되면 복사 방식 재검토 필요.
+            return replace(self._status)
 
     async def update(self, **kwargs) -> None:
         async with self._lock:
@@ -83,7 +85,10 @@ class StateStore:
     async def get(self) -> AcStatus:
         """reported에 desired override를 적용한 최종 상태 반환."""
         async with self._lock:
-            result = AcStatus(**asdict(self._reported))
+            # 필드가 전부 immutable 스칼라라는 전제의 얕은 복사(핫패스:
+            # 스트림 스윕/icool tick/모든 명령이 이 경로를 탄다).
+            # 가변 필드(list/dict)를 추가하게 되면 복사 방식 재검토 필요.
+            result = replace(self._reported)
             for k, v in self._desired.items():
                 setattr(result, k, v)
             return result
