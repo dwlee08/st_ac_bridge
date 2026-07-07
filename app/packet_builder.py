@@ -1,15 +1,18 @@
-"""C013 제어 패킷 빌드."""
+"""C013 제어 패킷 빌드.
+
+필드명 → (code, value) 매핑은 `_items_from_fields()` 한 곳에만 존재한다.
+개별 build_set_* 는 필드 dict를 구성해 이를 통과시키는 얇은 래퍼이며,
+기류 연동 필드의 상호배타 규칙은 protocol.normalize_airflow()가 단일 구현이다.
+"""
 from __future__ import annotations
 
 from packet_parser import crc16_xmodem
+from protocol import FAN_CODES, MODE_CODES, normalize_airflow
 
 START_BYTE = 0x32
 END_BYTE   = 0x34
 SRC        = bytes([0x62, 0x00, 0x00])
 MSG_TYPE   = bytes([0xC0, 0x13])
-
-_MODE_CODE = {"auto": 0, "cool": 1, "dry": 2, "fanOnly": 3}
-_FAN_CODE  = {"auto": 0, "low": 1, "medium": 2, "high": 3}
 
 _seq = 0
 
@@ -36,78 +39,67 @@ def _build(dst: bytes, items: list[tuple[int, bytes]]) -> bytes:
             + bytes([END_BYTE]))
 
 
+# 필드명 → 인코더. 항목 순서가 곧 패킷 내 코드 순서(canonical order)다.
+_FIELD_ENCODERS: list[tuple[str, callable]] = [
+    ("power",           lambda v: (0x4000, bytes([0x01 if v else 0x00]))),
+    ("mode",            lambda v: (0x4001, bytes([MODE_CODES.get(v, 1)]))),
+    ("target_temp",     lambda v: (0x4201, int(v * 10).to_bytes(2, "big"))),
+    ("fan_mode",        lambda v: (0x4006, bytes([FAN_CODES.get(v, 0)]))),
+    ("vane_vertical",   lambda v: (0x4011, bytes([0x01 if v else 0x00]))),
+    ("vane_horizontal", lambda v: (0x407E, bytes([0x01 if v else 0x00]))),
+    ("wind_free",       lambda v: (0x4060, bytes([0x09 if v else 0x00]))),
+    ("long_wind",       lambda v: (0x4007, bytes([0x10 if v else 0x0E]))),
+    ("auto_clean",      lambda v: (0x4111, bytes([0x01 if v else 0x00]))),
+]
+
+
+def _items_from_fields(fields: dict) -> list[tuple[int, bytes]]:
+    """AcStatus 필드 dict → C013 (code, value) 목록. 매핑의 단일 지점."""
+    return [enc(fields[name]) for name, enc in _FIELD_ENCODERS if name in fields]
+
+
+def build_fields(dst: bytes, fields: dict) -> bytes:
+    """필드 dict를 C013 한 패킷으로 빌드. 빈 dict면 b''."""
+    items = _items_from_fields(fields)
+    return _build(dst, items) if items else b""
+
+
 def build_set_power(dst: bytes, on: bool, target_temp: float | None = None) -> bytes:
-    items = [(0x4000, bytes([0x01 if on else 0x00]))]
+    fields: dict = {"power": on}
     if on and target_temp is not None:
-        items.append((0x4201, int(target_temp * 10).to_bytes(2, "big")))
-    return _build(dst, items)
+        fields["target_temp"] = target_temp
+    return build_fields(dst, fields)
 
 
 def build_set_mode(dst: bytes, mode: str) -> bytes:
-    return _build(dst, [(0x4001, bytes([_MODE_CODE[mode]]))])
+    return build_fields(dst, {"mode": mode})
 
 
 def build_set_target_temp(dst: bytes, temp: float, power: bool = True) -> bytes:
-    return _build(dst, [
-        (0x4000, bytes([0x01 if power else 0x00])),
-        (0x4201, int(temp * 10).to_bytes(2, "big")),
-    ])
+    return build_fields(dst, {"power": power, "target_temp": temp})
 
 
 def build_set_fan_mode(dst: bytes, fan: str) -> bytes:
-    return _build(dst, [(0x4006, bytes([_FAN_CODE[fan]]))])
+    return build_fields(dst, {"fan_mode": fan})
 
 
 def build_set_vane(dst: bytes, vertical: bool, horizontal: bool) -> bytes:
-    items = [
-        (0x4011, bytes([0x01 if vertical else 0x00])),
-        (0x407E, bytes([0x01 if horizontal else 0x00])),
-    ]
-    if vertical or horizontal:
-        items.append((0x4060, bytes([0x00])))   # wind_free off
-        items.append((0x4007, bytes([0x0E])))   # long_wind off
-    return _build(dst, items)
+    return build_fields(dst, normalize_airflow(
+        {"vane_vertical": vertical, "vane_horizontal": horizontal}))
 
 
 def build_set_wind_free(dst: bytes, on: bool) -> bytes:
-    items = [(0x4060, bytes([0x09 if on else 0x00]))]
-    if on:
-        items.append((0x4011, bytes([0x00])))   # vane_vertical off
-        items.append((0x407E, bytes([0x00])))   # vane_horizontal off
-    return _build(dst, items)
+    return build_fields(dst, normalize_airflow({"wind_free": on}))
 
 
 def build_set_long_wind(dst: bytes, on: bool) -> bytes:
-    items = [(0x4007, bytes([0x10 if on else 0x0E]))]
-    if on:
-        items.append((0x4011, bytes([0x00])))   # vane_vertical off
-        items.append((0x407E, bytes([0x00])))   # vane_horizontal off
-    return _build(dst, items)
+    return build_fields(dst, normalize_airflow({"long_wind": on}))
 
 
 def build_set_auto_clean(dst: bytes, on: bool) -> bytes:
-    return _build(dst, [(0x4111, bytes([0x01 if on else 0x00]))])
+    return build_fields(dst, {"auto_clean": on})
 
 
 def build_reconcile(dst: bytes, diffs: dict) -> bytes:
     """desired와 reported의 차이(diffs)를 C013 한 패킷으로 빌드."""
-    items: list[tuple[int, bytes]] = []
-    if "power" in diffs:
-        items.append((0x4000, bytes([0x01 if diffs["power"] else 0x00])))
-    if "mode" in diffs:
-        items.append((0x4001, bytes([_MODE_CODE.get(diffs["mode"], 1)])))
-    if "target_temp" in diffs:
-        items.append((0x4201, int(diffs["target_temp"] * 10).to_bytes(2, "big")))
-    if "fan_mode" in diffs:
-        items.append((0x4006, bytes([_FAN_CODE.get(diffs["fan_mode"], 0)])))
-    if "vane_vertical" in diffs:
-        items.append((0x4011, bytes([0x01 if diffs["vane_vertical"] else 0x00])))
-    if "vane_horizontal" in diffs:
-        items.append((0x407E, bytes([0x01 if diffs["vane_horizontal"] else 0x00])))
-    if "wind_free" in diffs:
-        items.append((0x4060, bytes([0x09 if diffs["wind_free"] else 0x00])))
-    if "long_wind" in diffs:
-        items.append((0x4007, bytes([0x10 if diffs["long_wind"] else 0x0E])))
-    if "auto_clean" in diffs:
-        items.append((0x4111, bytes([0x01 if diffs["auto_clean"] else 0x00])))
-    return _build(dst, items) if items else b""
+    return build_fields(dst, diffs)

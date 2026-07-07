@@ -1,8 +1,7 @@
 """파싱된 RS485 코드/값 → AcStatus 필드 변환."""
 from __future__ import annotations
 
-_MODE_MAP = {0: "auto", 1: "cool", 2: "dry", 3: "fanOnly"}
-_FAN_MAP  = {0: "auto", 1: "low",  2: "medium", 3: "high"}
+from protocol import FAN_BY_CODE, MODE_BY_CODE
 
 # 실외기 운전 모드 (0x8001) — samsung_ac NASA 레퍼런스 기준 주요 값
 _ODU_MODE_MAP = {
@@ -20,9 +19,9 @@ def decode_codes(codes: list[tuple[int, bytes]]) -> dict:
         if code == 0x4000:
             updates["power"] = value[0] == 0x01
         elif code == 0x4001:
-            updates["mode"] = _MODE_MAP.get(value[0], "cool")
+            updates["mode"] = MODE_BY_CODE.get(value[0], "cool")
         elif code == 0x4006:
-            updates["fan_mode"] = _FAN_MAP.get(value[0], "auto")
+            updates["fan_mode"] = FAN_BY_CODE.get(value[0], "auto")
         elif code == 0x4011:
             updates["vane_vertical"] = value[0] == 0x01
         elif code == 0x407E:
