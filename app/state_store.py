@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import asdict, dataclass, field
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -103,6 +106,14 @@ class StateStore:
     async def update(self, **kwargs) -> dict:
         """C014 수신 시 호출. desired와 다른 필드를 반환 (reconcile 대상)."""
         async with self._lock:
+            # 외부 전원 ON 감지: 브릿지가 켜라고 명령한 적 없는데(desired에
+            # power=True 없음) AC가 off→on 되면 리모컨/판넬 조작으로 보고,
+            # 꺼진 동안 쌓인 pending desired를 모두 비워 직접 제어를 존중한다.
+            # (브릿지로 켜면 set_power가 desired["power"]=True를 먼저 등록하므로 제외)
+            if (kwargs.get("power") is True and not self._reported.power
+                    and self._desired.get("power") is not True and self._desired):
+                logger.info("external power-on: pending desired cleared %s", self._desired)
+                self._desired.clear()
             for k, v in kwargs.items():
                 if hasattr(self._reported, k):
                     setattr(self._reported, k, v)

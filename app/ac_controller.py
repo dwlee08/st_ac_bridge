@@ -135,8 +135,16 @@ class RealAcController(AcController):
 
     async def set_power(self, on: bool) -> bool:
         await self._store.set_desired(power=on)
-        status = await self._store.get()
-        pkt = pb.build_set_power(self._dst, on, status.target_temp if on else None)
+        if on:
+            # 꺼진 동안 쌓인 desired(모드/풍량/풍향 등)를 전원 코드와
+            # C013 한 패킷으로 병합 — 별도 reconcile 패킷(조작음 추가) 방지
+            diffs = await self._store.pending_diffs()
+            diffs["power"] = True
+            if "target_temp" not in diffs:
+                diffs["target_temp"] = (await self._store.get()).target_temp
+            pkt = pb.build_reconcile(self._dst, diffs)
+        else:
+            pkt = pb.build_set_power(self._dst, False)
         logger.info("TX SET_POWER on=%s pkt=%s", on, pkt.hex())
         await self._ew11.send_with_ack(pkt)
         return True
