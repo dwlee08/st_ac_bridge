@@ -161,6 +161,13 @@ class Session:
             mode = p.get("mode")
             if mode not in VALID_MODES:
                 return err_response(req.id, f"invalid mode: {mode}")
+            if mode == "fanOnly":
+                status = await ctrl.get_status()
+                if status.fan_mode == "auto":
+                    # 송풍 모드는 풍량 auto 미지원 → low로 보정해
+                    # 모드+풍량을 한 패킷으로 적용 (D1 정책)
+                    await ctrl.apply_settings(mode="fanOnly", fan_mode="low")
+                    return ok_response(req.id, {"fan_corrected": "low"})
             await ctrl.set_mode(mode)
             return ok_response(req.id)
 
@@ -181,8 +188,8 @@ class Session:
             if fan not in VALID_FAN_MODES:
                 return err_response(req.id, f"invalid fan mode: {fan}")
             status = await ctrl.get_status()
-            if status.mode == "fan" and fan == "auto":
-                return err_response(req.id, "fan mode auto is not allowed when mode=fan")
+            if status.mode == "fanOnly" and fan == "auto":
+                return err_response(req.id, "fan mode auto is not allowed when mode=fanOnly")
             await ctrl.set_fan_mode(fan)
             return ok_response(req.id)
 
