@@ -38,7 +38,6 @@ class Session:
         self._reader = reader
         self._writer = writer
         self._controllers = controllers
-        self._default_unit = next(iter(controllers), None)
         self._peer = peer
         self._unit_labels = unit_labels or {}
         self._outdoor_store = outdoor_store
@@ -86,13 +85,21 @@ class Session:
         logger.info("resp ok=%s from %s", resp.ok, self._peer)
         await self._send(resp.serialize())
 
-    def _resolve_controller(self, params: dict) -> tuple[AcController | None, str | None]:
-        """unit_id로 컨트롤러 반환. 생략 시 기본 유닛. 없으면 (None, 오류메시지)."""
-        uid = params.get("unit_id", self._default_unit)
+    def _resolve_controller(
+        self, params: dict,
+    ) -> tuple[AcController | None, str | None, str | None]:
+        """unit_id(필수)로 (컨트롤러, uid, 오류메시지) 반환.
+
+        엣지는 유닛 대상 명령에 항상 unit_id를 포함한다(계약). 누락과
+        미등록을 구분해 에러를 돌려준다.
+        """
+        uid = params.get("unit_id")
+        if uid is None:
+            return None, None, "missing required param: unit_id"
         ctrl = self._controllers.get(uid)
         if ctrl is None:
-            return None, f"unknown unit_id: {uid}"
-        return ctrl, None
+            return None, uid, f"unknown unit_id: {uid}"
+        return ctrl, uid, None
 
     async def _dispatch(self, req: Request):
         cmd = req.cmd
@@ -122,8 +129,7 @@ class Session:
             status = await self._outdoor_store.get()
             return ok_response(req.id, status.to_dict())
 
-        uid = p.get("unit_id", self._default_unit)
-        ctrl, err = self._resolve_controller(p)
+        ctrl, uid, err = self._resolve_controller(p)
         if ctrl is None:
             return err_response(req.id, err)
 
