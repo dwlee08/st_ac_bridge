@@ -67,6 +67,9 @@ class IcoolState:
     duration_min: int = 0
     deadline: float | None = None   # time.monotonic() 기준 종료시각. None=무제한
     wind_free: bool = False         # 현재 무풍 단계 여부
+    saved_state: dict | None = None    # icool 시작(신규) 시점의 AC 상태 스냅샷.
+                                       # 스위치 OFF로 종료할 때 이 상태로 복원한다
+                                       # (원래 전원 off였으면 복원=전원 off, on이었으면 원래 냉방 설정 복원).
     # 유닛별 튜닝값 (엣지 기기 설정에서 SET_ICOOL_CONFIG로 전달; 기본값=모듈 상수).
     margin: float = MARGIN
     blow_offset: float = BLOW_OFFSET
@@ -155,6 +158,7 @@ class IcoolManager:
             logger.warning("[icool] start: unknown unit %s", uid)
             return
         async with st.lock:
+            was_active = st.active   # 이미 동작 중이면 재적용(목표 변경 등) — 전원 켠 주체 판정 유지
             if config:
                 _apply_config(st, config)   # 시작 시 최신 튜닝값 동봉 (브릿지 재시작 후에도 복원)
             if target is not None:
@@ -164,7 +168,7 @@ class IcoolManager:
                 st.duration_min = -1 if int(duration_min) < 0 else min(720, int(duration_min))
             st.active = True
             st.deadline = (time.monotonic() + st.duration_min * 60) if st.duration_min > 0 else None
-            await self._apply_start(ctrl, st)
+            await self._apply_start(ctrl, st, fresh=not was_active)
         logger.info("[icool] %s start target=%.1f duration=%dmin "
                     "(margin=%.2f blow_off=%.2f hum=%d/%d/%.2f fan=%s)",
                     uid, st.target, st.duration_min,
@@ -191,7 +195,24 @@ class IcoolManager:
                 return
             st.active = False
             st.deadline = None
+            saved = st.saved_state
+            st.saved_state = None
         logger.info("[icool] %s stop (%s)", uid, reason)
+        # 스위치 OFF 시 시작 시점 상태로 복원:
+        #  - 원래 전원 off였으면 → AC 전원 OFF (icool이 켠 전원을 되돌림)
+        #  - 원래 켜져 있던 냉방이면 → 그때의 모드/온도/풍량/풍향/무풍 설정 복원
+        await self._restore(uid, saved, reason)
+
+    async def _restore(self, uid: str, saved: dict | None, reason: str) -> None:
+        ctrl = self._controllers.get(uid)
+        if ctrl is None or saved is None:
+            return
+        if not saved.get("power"):
+            await ctrl.set_power(False)
+            logger.info("[icool] %s AC 전원 OFF (%s, 시작 시 꺼져 있었음)", uid, reason)
+        else:
+            await ctrl.apply_settings(**saved)   # power=True 포함 → 원래 냉방 상태 복원
+            logger.info("[icool] %s 시작 시점 상태로 복원 (%s): %s", uid, reason, saved)
 
     async def set_duration(self, uid: str, duration_min: int) -> None:
         st = self._states.get(uid)
@@ -228,11 +249,13 @@ class IcoolManager:
         async with st.lock:
             if not st.active:
                 return
-            # 1) 타이머 만료
+            # 1) 타이머 만료 → icool 종료 + 에어컨 전원 OFF (취침 타이머처럼)
             if st.deadline is not None and time.monotonic() >= st.deadline:
                 st.active = False
                 st.deadline = None
                 logger.info("[icool] %s stop (timer)", uid)
+                await ctrl.set_power(False)
+                logger.info("[icool] %s AC 전원 OFF (timer)", uid)
                 return
             # 2) 예상 상태와 어긋나면 외부 조작으로 보고 종료
             if self._deviated(status, st):
@@ -277,9 +300,23 @@ class IcoolManager:
         delta = cur - target
         return (delta < margin) if prev_wf else (delta < -margin)
 
-    async def _apply_start(self, ctrl: AcController, st: IcoolState) -> None:
+    async def _apply_start(self, ctrl: AcController, st: IcoolState, fresh: bool = True) -> None:
         # 현재 온도로 초기 단계 결정 — 이미 목표보다 시원하면 강풍 없이 무풍으로 시작
         status = await ctrl.get_status()
+        if fresh:
+            # 새로 시작하는 경우에만 스냅샷: icool 적용 전(=지금) 상태를 저장해 두고
+            # 스위치 OFF 종료 시 복원한다. (재적용 시엔 icool이 이미 바꾼 상태라 저장하지 않음)
+            # current_temp/humidity는 센서값이라 복원 대상에서 제외.
+            st.saved_state = {
+                "power":           status.power,
+                "mode":            status.mode,
+                "target_temp":     status.target_temp,
+                "fan_mode":        status.fan_mode,
+                "vane_vertical":   status.vane_vertical,
+                "vane_horizontal": status.vane_horizontal,
+                "wind_free":       status.wind_free,
+                "long_wind":       status.long_wind,
+            }
         cur = status.current_temp or 0.0
         eff = cur + _hum_bias(status.humidity, st.hum_low, st.hum_high, st.hum_bias_max)
         wf = cur >= _MIN_VALID_TEMP and self._decide(eff, st.target, False, st.margin)
