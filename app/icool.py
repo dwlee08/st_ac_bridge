@@ -160,7 +160,8 @@ class IcoolManager:
             if target is not None:
                 st.target = _clamp(float(target))
             if duration_min is not None:
-                st.duration_min = max(0, min(720, int(duration_min)))
+                # 계약: -1=연속(무제한), 0=미사용/기본, N=N분. 음수는 -1로 정규화, 양수만 720 상한.
+                st.duration_min = -1 if int(duration_min) < 0 else min(720, int(duration_min))
             st.active = True
             st.deadline = (time.monotonic() + st.duration_min * 60) if st.duration_min > 0 else None
             await self._apply_start(ctrl, st)
@@ -197,7 +198,8 @@ class IcoolManager:
         if st is None:
             return
         async with st.lock:
-            st.duration_min = max(0, min(720, int(duration_min)))
+            # 계약: -1=연속(무제한), 0=미사용/기본, N=N분. 음수는 -1로 정규화, 양수만 720 상한.
+            st.duration_min = -1 if int(duration_min) < 0 else min(720, int(duration_min))
             if st.active:
                 st.deadline = (time.monotonic() + st.duration_min * 60) if st.duration_min > 0 else None
         logger.info("[icool] %s duration=%dmin", uid, st.duration_min)
