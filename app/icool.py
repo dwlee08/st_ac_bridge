@@ -31,24 +31,33 @@ from protocol import TEMP_MAX, TEMP_MIN
 
 logger = logging.getLogger(__name__)
 
+# 아래 상수는 유닛별 튜닝값의 "기본값"이다. 실제 동작에는 IcoolState의 동명 필드가 쓰이며,
+# 엣지 기기 설정(preferences)에서 SET_ICOOL_CONFIG로 유닛별로 덮어쓸 수 있다.
+# (제어 루프가 유닛 공용 1개라, 유닛별 차등은 반드시 상태(IcoolState)에 있어야 한다.)
 MARGIN = 0.5          # 무풍 켜고 끄는 경계 여유폭(℃)
-FAN_BLOW = "high"     # blow 단계 풍량 (강풍 고정)
+BLOW_OFFSET = 1.0     # 강풍 단계 설정온도 = 목표 - 이 값(℃)
+FAN_BLOW = "high"     # blow 단계 풍량 (기본 강풍)
 HUM_LOW = 65          # 이 습도(%RH) 이하면 체감온도 보정 없음
 HUM_HIGH = 80         # 이 습도 이상이면 최대 보정 (사이 구간은 선형)
 HUM_BIAS_MAX = 1.0    # 체감온도 최대 보정(℃)
-TICK_SEC = 5          # 제어 루프 주기(초)
+TICK_SEC = 5          # 제어 루프 주기(초) — 루프가 1개라 유닛 공용(전역), 설정 대상 아님
 _MIN_VALID_TEMP = 5.0  # 실측 온도가 이 미만이면 아직 미수신으로 보고 제어 보류
+
+_BLOW_FANS = {"auto", "low", "medium", "high"}
 
 
 def _clamp(t: float) -> float:
     return max(TEMP_MIN, min(TEMP_MAX, t))
 
 
-def _hum_bias(humidity: int | None) -> float:
-    """습도(%RH) → 체감온도 보정(℃). 미수신(None)이면 0."""
-    if humidity is None or humidity <= HUM_LOW:
+def _hum_bias(humidity: int | None, low: int = HUM_LOW, high: int = HUM_HIGH,
+              bias_max: float = HUM_BIAS_MAX) -> float:
+    """습도(%RH) → 체감온도 보정(℃). 미수신(None)이면 0. 임계값은 유닛별 설정."""
+    if humidity is None or humidity <= low:
         return 0.0
-    return HUM_BIAS_MAX * min(1.0, (humidity - HUM_LOW) / (HUM_HIGH - HUM_LOW))
+    if high <= low:                       # 설정 이상값 방어 (0 나눗셈 방지)
+        return bias_max
+    return bias_max * min(1.0, (humidity - low) / (high - low))
 
 
 @dataclass
@@ -58,13 +67,55 @@ class IcoolState:
     duration_min: int = 0
     deadline: float | None = None   # time.monotonic() 기준 종료시각. None=무제한
     wind_free: bool = False         # 현재 무풍 단계 여부
+    # 유닛별 튜닝값 (엣지 기기 설정에서 SET_ICOOL_CONFIG로 전달; 기본값=모듈 상수).
+    margin: float = MARGIN
+    blow_offset: float = BLOW_OFFSET
+    hum_low: int = HUM_LOW
+    hum_high: int = HUM_HIGH
+    hum_bias_max: float = HUM_BIAS_MAX
+    blow_fan: str = FAN_BLOW
     # 유닛별 락 — 한 유닛의 AC 명령 대기가 다른 유닛의 tick/start/stop을 막지 않도록
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
 
     def cool_sp(self) -> float:
-        # 무풍 진입 경계(목표-0.5)보다 0.5℃ 아래 — AC 내부 서모스탯이
+        # 무풍 진입 경계(목표-margin)보다 아래 — AC 내부 서모스탯이
         # 경계 도달 전에 압축기를 줄여 무풍 진입이 불발되는 것을 방지
-        return _clamp(self.target - 1.0)
+        return _clamp(self.target - self.blow_offset)
+
+
+def _apply_config(st: IcoolState, config: dict) -> None:
+    """엣지가 보낸 유닛별 튜닝값을 IcoolState에 반영 (검증/클램프, 알 수 없는 키는 무시).
+    None 값은 '미설정'으로 보고 건너뛴다(기존 값 유지)."""
+    def num(key, lo, hi, cast):
+        v = config.get(key)
+        if v is None:
+            return None
+        try:
+            return max(lo, min(hi, cast(v)))
+        except (TypeError, ValueError):
+            logger.warning("[icool] config %s 무시 (잘못된 값 %r)", key, v)
+            return None
+
+    m = num("margin", 0.1, 5.0, float)
+    if m is not None:
+        st.margin = m
+    bo = num("blow_offset", 0.0, 5.0, float)
+    if bo is not None:
+        st.blow_offset = bo
+    hl = num("hum_low", 0, 100, int)
+    if hl is not None:
+        st.hum_low = hl
+    hh = num("hum_high", 0, 100, int)
+    if hh is not None:
+        st.hum_high = hh
+    hb = num("hum_bias_max", 0.0, 5.0, float)
+    if hb is not None:
+        st.hum_bias_max = hb
+    if config.get("blow_fan") in _BLOW_FANS:
+        st.blow_fan = config["blow_fan"]
+    # 상한이 하한 이하면 보정이 계단식이 되고 _hum_bias 0나눗셈 위험 → 최소 1 간격 보장
+    if st.hum_high <= st.hum_low:
+        st.hum_high = min(100, st.hum_low + 1)
 
 
 class IcoolManager:
@@ -97,13 +148,15 @@ class IcoolManager:
 
     # ── 엣지 명령 진입점 ─────────────────────────────────────────
     async def start(self, uid: str, target: float | None = None,
-                    duration_min: int | None = None) -> None:
+                    duration_min: int | None = None, config: dict | None = None) -> None:
         ctrl = self._controllers.get(uid)
         st = self._state(uid)
         if ctrl is None or st is None:
             logger.warning("[icool] start: unknown unit %s", uid)
             return
         async with st.lock:
+            if config:
+                _apply_config(st, config)   # 시작 시 최신 튜닝값 동봉 (브릿지 재시작 후에도 복원)
             if target is not None:
                 st.target = _clamp(float(target))
             if duration_min is not None:
@@ -111,7 +164,22 @@ class IcoolManager:
             st.active = True
             st.deadline = (time.monotonic() + st.duration_min * 60) if st.duration_min > 0 else None
             await self._apply_start(ctrl, st)
-        logger.info("[icool] %s start target=%.1f duration=%dmin", uid, st.target, st.duration_min)
+        logger.info("[icool] %s start target=%.1f duration=%dmin "
+                    "(margin=%.2f blow_off=%.2f hum=%d/%d/%.2f fan=%s)",
+                    uid, st.target, st.duration_min,
+                    st.margin, st.blow_offset, st.hum_low, st.hum_high, st.hum_bias_max, st.blow_fan)
+
+    async def set_config(self, uid: str, config: dict) -> None:
+        """유닛별 튜닝값 갱신 (엣지 기기 설정 변경 시). 상태를 지연 생성해 start 전에도 보관하며,
+        동작 중이면 다음 tick부터 새 값이 적용된다."""
+        st = self._state(uid)
+        if st is None:
+            logger.warning("[icool] set_config: unknown unit %s", uid)
+            return
+        async with st.lock:
+            _apply_config(st, config)
+        logger.info("[icool] %s config margin=%.2f blow_off=%.2f hum=%d/%d/%.2f fan=%s",
+                    uid, st.margin, st.blow_offset, st.hum_low, st.hum_high, st.hum_bias_max, st.blow_fan)
 
     async def stop(self, uid: str, reason: str = "user") -> None:
         st = self._states.get(uid)
@@ -178,8 +246,8 @@ class IcoolManager:
 
     async def _control(self, uid: str, ctrl: AcController, st: IcoolState,
                        cur: float, humidity: int | None) -> None:
-        eff = cur + _hum_bias(humidity)   # 체감온도(습도 보정)로 판정
-        wf = self._decide(eff, st.target, st.wind_free)
+        eff = cur + _hum_bias(humidity, st.hum_low, st.hum_high, st.hum_bias_max)  # 체감온도
+        wf = self._decide(eff, st.target, st.wind_free, st.margin)
         if wf and not st.wind_free:
             await ctrl.apply_settings(**self._wind_free_fields(st))
             st.wind_free = True
@@ -200,19 +268,19 @@ class IcoolManager:
     def _blow_fields(st: IcoolState) -> dict:
         return dict(wind_free=False, long_wind=False,
                     vane_vertical=True, vane_horizontal=True,
-                    fan_mode=FAN_BLOW, target_temp=st.cool_sp())
+                    fan_mode=st.blow_fan, target_temp=st.cool_sp())
 
-    # 실측-목표 온도차로 무풍 여부 결정. 경계는 ±0.5 여유폭 (blow는 강풍 고정).
-    def _decide(self, cur: float, target: float, prev_wf: bool) -> bool:
+    # 실측-목표 온도차로 무풍 여부 결정. 경계는 ±margin 여유폭(유닛별).
+    def _decide(self, cur: float, target: float, prev_wf: bool, margin: float = MARGIN) -> bool:
         delta = cur - target
-        return (delta < MARGIN) if prev_wf else (delta < -MARGIN)
+        return (delta < margin) if prev_wf else (delta < -margin)
 
     async def _apply_start(self, ctrl: AcController, st: IcoolState) -> None:
         # 현재 온도로 초기 단계 결정 — 이미 목표보다 시원하면 강풍 없이 무풍으로 시작
         status = await ctrl.get_status()
         cur = status.current_temp or 0.0
-        eff = cur + _hum_bias(status.humidity)
-        wf = cur >= _MIN_VALID_TEMP and self._decide(eff, st.target, False)
+        eff = cur + _hum_bias(status.humidity, st.hum_low, st.hum_high, st.hum_bias_max)
+        wf = cur >= _MIN_VALID_TEMP and self._decide(eff, st.target, False, st.margin)
         stage = self._wind_free_fields(st) if wf else self._blow_fields(st)
         await ctrl.apply_settings(power=True, mode="cool", **stage)
         st.wind_free = wf
@@ -233,7 +301,7 @@ class IcoolManager:
                 return True
             if not (status.vane_vertical and status.vane_horizontal):
                 return True
-            if status.fan_mode != FAN_BLOW:
+            if status.fan_mode != st.blow_fan:   # 유닛별 강풍 풍량 (_blow_fields와 일치해야 함)
                 return True
             if abs(status.target_temp - st.cool_sp()) > 0.05:
                 return True

@@ -243,11 +243,14 @@ class Session:
             if on:
                 target = p.get("target")
                 duration = p.get("duration")
+                config = p.get("config")
                 if target is not None and not isinstance(target, (int, float)):
                     return err_response(req.id, "params.target must be number")
                 if duration is not None and not isinstance(duration, (int, float)):
                     return err_response(req.id, "params.duration must be number")
-                await self._icool.start(uid, target=target, duration_min=duration)
+                if config is not None and not isinstance(config, dict):
+                    return err_response(req.id, "params.config must be object")
+                await self._icool.start(uid, target=target, duration_min=duration, config=config)
             else:
                 await self._icool.stop(uid)
             return ok_response(req.id, self._icool.status(uid))
@@ -259,6 +262,17 @@ class Session:
             if not isinstance(duration, (int, float)):
                 return err_response(req.id, "params.duration must be number")
             await self._icool.set_duration(uid, int(duration))
+            return ok_response(req.id, self._icool.status(uid))
+
+        # 인텔리전트 냉방 유닛별 튜닝값(무풍 여유폭/강풍 오프셋/습도 보정/강풍 풍량) 설정.
+        # 엣지 기기 설정(preferences) 변경·초기화 시 전달. 동작 중이면 다음 tick부터 반영.
+        if cmd == "SET_ICOOL_CONFIG":
+            if self._icool is None:
+                return err_response(req.id, "icool not available")
+            config = p.get("config")
+            if not isinstance(config, dict):
+                return err_response(req.id, "params.config must be object")
+            await self._icool.set_config(uid, config)
             return ok_response(req.id, self._icool.status(uid))
 
         return err_response(req.id, f"unknown command: {cmd}")
