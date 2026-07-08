@@ -85,15 +85,15 @@ class IcoolManager:
 
     # ── STATUS 노출용 ────────────────────────────────────────────
     def status(self, uid: str) -> dict:
+        """icool_duration_min: 남은 시간(분). -1=무제한 동작 중, 0=미사용.
+        동작 중엔 최소 1을 보장해 0(미사용)과 겹치지 않게 한다 (만료는 tick이 처리)."""
         st = self._states.get(uid)
         if st is None or not st.active:
-            return {"icool_active": False, "icool_status": "대기 중"}
+            return {"icool_active": False, "icool_duration_min": 0}
         if st.deadline is None:
-            return {"icool_active": True, "icool_remaining_min": None,
-                    "icool_status": "인텔리전트 동작 중 (무제한)"}
-        remain = max(0, math.ceil((st.deadline - time.monotonic()) / 60))
-        return {"icool_active": True, "icool_remaining_min": remain,
-                "icool_status": f"인텔리전트 동작 중 ({remain}분 남음)"}
+            return {"icool_active": True, "icool_duration_min": -1}
+        remain = max(1, math.ceil((st.deadline - time.monotonic()) / 60))
+        return {"icool_active": True, "icool_duration_min": remain}
 
     # ── 엣지 명령 진입점 ─────────────────────────────────────────
     async def start(self, uid: str, target: float | None = None,

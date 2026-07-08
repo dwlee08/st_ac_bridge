@@ -50,7 +50,7 @@ class StreamHub:
     # ── 유닛/스냅샷 상태 구성 ────────────────────────────────────
     async def _unit_state(self, uid: str, ctrl, power_w: int | None) -> dict:
         s = (await ctrl.get_status()).to_dict()
-        s.update(self._icool.status(uid))          # icool_active/status/remaining
+        s.update(self._icool.status(uid))          # icool_active/icool_duration_min
         if power_w is not None:
             s["system_power_w"] = power_w           # 실외기 합산 전력을 각 유닛이 echo
         return s
