@@ -242,15 +242,13 @@ class Session:
                 return err_response(req.id, "params.on must be boolean")
             if on:
                 target = p.get("target")
-                duration = p.get("duration")
                 config = p.get("config")
                 if target is not None and not isinstance(target, (int, float)):
                     return err_response(req.id, "params.target must be number")
-                if duration is not None and not isinstance(duration, (int, float)):
-                    return err_response(req.id, "params.duration must be number")
                 if config is not None and not isinstance(config, dict):
                     return err_response(req.id, "params.config must be object")
-                await self._icool.start(uid, target=target, duration_min=duration, config=config)
+                # 타이머(duration)는 icool과 분리 — SET_ICOOL_DURATION으로만 제어한다.
+                await self._icool.start(uid, target=target, config=config)
             else:
                 await self._icool.stop(uid)
             return ok_response(req.id, self._icool.status(uid))

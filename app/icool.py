@@ -64,8 +64,13 @@ def _hum_bias(humidity: int | None, low: int = HUM_LOW, high: int = HUM_HIGH,
 class IcoolState:
     active: bool = False
     target: float = 24.0
+    # ── 타이머 (icool과 분리) ──────────────────────────────────
+    # duration_min: 사용자 선택값 (-1=연속/타이머 없음, 0=미사용, N=N분).
+    # timer_sec: 남은 초. None=타이머 없음. 전원 ON일 때만 감소(전원 OFF면 일시정지).
+    # 만료(0 도달) 시 AC 전원 OFF. icool 동작 여부와 무관하게 독립 동작.
     duration_min: int = 0
-    deadline: float | None = None   # time.monotonic() 기준 종료시각. None=무제한
+    timer_sec: float | None = None
+    timer_last: float | None = None   # 마지막 감소 시각(monotonic)
     wind_free: bool = False         # 현재 무풍 단계 여부
     saved_state: dict | None = None    # icool 시작(신규) 시점의 AC 상태 스냅샷.
                                        # 스위치 OFF로 종료할 때 이 상태로 복원한다
@@ -139,19 +144,24 @@ class IcoolManager:
 
     # ── STATUS 노출용 ────────────────────────────────────────────
     def status(self, uid: str) -> dict:
-        """icool_duration_min: 남은 시간(분). -1=무제한 동작 중, 0=미사용.
-        동작 중엔 최소 1을 보장해 0(미사용)과 겹치지 않게 한다 (만료는 tick이 처리)."""
+        """icool_active: icool 동작 여부(타이머와 무관).
+        timer_min: 타이머 남은 시간(분). -1=연속(타이머 없음), 0=미사용, N=남은 분.
+        (남은 시간이 있으면 최소 1을 보장해 0(미사용)과 겹치지 않게 한다)."""
         st = self._states.get(uid)
-        if st is None or not st.active:
-            return {"icool_active": False, "icool_duration_min": 0}
-        if st.deadline is None:
-            return {"icool_active": True, "icool_duration_min": -1}
-        remain = max(1, math.ceil((st.deadline - time.monotonic()) / 60))
-        return {"icool_active": True, "icool_duration_min": remain}
+        if st is None:
+            return {"icool_active": False, "timer_min": 0}
+        if st.timer_sec is not None:
+            timer_min = max(1, math.ceil(st.timer_sec / 60))
+        elif st.duration_min < 0:
+            timer_min = -1
+        else:
+            timer_min = 0
+        return {"icool_active": st.active, "timer_min": timer_min}
 
     # ── 엣지 명령 진입점 ─────────────────────────────────────────
     async def start(self, uid: str, target: float | None = None,
-                    duration_min: int | None = None, config: dict | None = None) -> None:
+                    config: dict | None = None) -> None:
+        # icool 시작. 타이머(duration)는 여기서 다루지 않는다 — set_duration으로 독립 제어.
         ctrl = self._controllers.get(uid)
         st = self._state(uid)
         if ctrl is None or st is None:
@@ -163,15 +173,11 @@ class IcoolManager:
                 _apply_config(st, config)   # 시작 시 최신 튜닝값 동봉 (브릿지 재시작 후에도 복원)
             if target is not None:
                 st.target = _clamp(float(target))
-            if duration_min is not None:
-                # 계약: -1=연속(무제한), 0=미사용/기본, N=N분. 음수는 -1로 정규화, 양수만 720 상한.
-                st.duration_min = -1 if int(duration_min) < 0 else min(720, int(duration_min))
             st.active = True
-            st.deadline = (time.monotonic() + st.duration_min * 60) if st.duration_min > 0 else None
             await self._apply_start(ctrl, st, fresh=not was_active)
-        logger.info("[icool] %s start target=%.1f duration=%dmin "
+        logger.info("[icool] %s start target=%.1f "
                     "(margin=%.2f blow_off=%.2f hum=%d/%d/%.2f fan=%s)",
-                    uid, st.target, st.duration_min,
+                    uid, st.target,
                     st.margin, st.blow_offset, st.hum_low, st.hum_high, st.hum_bias_max, st.blow_fan)
 
     async def set_config(self, uid: str, config: dict) -> None:
@@ -194,7 +200,7 @@ class IcoolManager:
             if not st.active:
                 return
             st.active = False
-            st.deadline = None
+            # 타이머는 icool과 분리 — icool 정지 시에도 타이머는 그대로 둔다.
             saved = st.saved_state
             st.saved_state = None
         logger.info("[icool] %s stop (%s)", uid, reason)
@@ -215,15 +221,21 @@ class IcoolManager:
             logger.info("[icool] %s 시작 시점 상태로 복원 (%s): %s", uid, reason, saved)
 
     async def set_duration(self, uid: str, duration_min: int) -> None:
-        st = self._states.get(uid)
+        """타이머 설정 (icool과 독립). -1=연속(타이머 없음), 0=미사용/해제, N=N분.
+        N분이면 즉시 카운트 시작하되, 전원 ON일 때만 감소한다(_check_timer)."""
+        st = self._state(uid)   # icool 미동작 상태에서도 타이머를 걸 수 있게 생성
         if st is None:
             return
         async with st.lock:
-            # 계약: -1=연속(무제한), 0=미사용/기본, N=N분. 음수는 -1로 정규화, 양수만 720 상한.
-            st.duration_min = -1 if int(duration_min) < 0 else min(720, int(duration_min))
-            if st.active:
-                st.deadline = (time.monotonic() + st.duration_min * 60) if st.duration_min > 0 else None
-        logger.info("[icool] %s duration=%dmin", uid, st.duration_min)
+            m = -1 if int(duration_min) < 0 else min(720, int(duration_min))
+            st.duration_min = m
+            if m > 0:
+                st.timer_sec = m * 60
+                st.timer_last = time.monotonic()
+            else:
+                st.timer_sec = None   # 연속/해제 → 타이머 없음
+                st.timer_last = None
+        logger.info("[timer] %s set %dmin", uid, m)
 
     # ── 제어 루프 ────────────────────────────────────────────────
     async def run_loop(self) -> None:
@@ -238,8 +250,38 @@ class IcoolManager:
     async def _tick_all(self) -> None:
         # await 중 start()가 새 유닛을 등록해도 안전하도록 스냅샷 순회
         for uid, st in list(self._states.items()):
+            if st.timer_sec is not None:      # 타이머는 icool 동작 여부와 무관하게 확인
+                await self._check_timer(uid, st)
             if st.active:
                 await self._tick(uid, st)
+
+    # 타이머(icool과 분리): 전원 ON일 때만 실시간으로 감소, 0 도달 시 AC 전원 OFF.
+    # 전원 OFF 동안은 timer_last만 갱신해 감소를 멈춘다(일시정지).
+    async def _check_timer(self, uid: str, st: IcoolState) -> None:
+        ctrl = self._controllers.get(uid)
+        if ctrl is None:
+            return
+        powered = (await ctrl.get_status()).power
+        expired = False
+        async with st.lock:
+            if st.timer_sec is None:
+                return
+            now = time.monotonic()
+            if not powered:
+                st.timer_last = now       # 꺼져 있는 동안은 감소하지 않음
+                return
+            if st.timer_last is not None:
+                st.timer_sec -= (now - st.timer_last)
+            st.timer_last = now
+            if st.timer_sec <= 0:
+                st.timer_sec = None
+                st.timer_last = None
+                st.duration_min = 0
+                st.active = False         # 전원을 끄므로 icool도 함께 종료
+                expired = True
+        if expired:
+            await ctrl.set_power(False)
+            logger.info("[timer] %s 만료 → AC 전원 OFF", uid)
 
     async def _tick(self, uid: str, st: IcoolState) -> None:
         ctrl = self._controllers.get(uid)
@@ -249,21 +291,12 @@ class IcoolManager:
         async with st.lock:
             if not st.active:
                 return
-            # 1) 타이머 만료 → icool 종료 + 에어컨 전원 OFF (취침 타이머처럼)
-            if st.deadline is not None and time.monotonic() >= st.deadline:
-                st.active = False
-                st.deadline = None
-                logger.info("[icool] %s stop (timer)", uid)
-                await ctrl.set_power(False)
-                logger.info("[icool] %s AC 전원 OFF (timer)", uid)
-                return
-            # 2) 예상 상태와 어긋나면 외부 조작으로 보고 종료
+            # 예상 상태와 어긋나면 외부 조작으로 보고 icool 종료 (타이머는 건드리지 않음)
             if self._deviated(status, st):
                 st.active = False
-                st.deadline = None
                 logger.info("[icool] %s stop (external change)", uid)
                 return
-            # 3) 온도 제어 (실측 미수신 시 보류)
+            # 온도 제어 (실측 미수신 시 보류)
             cur = status.current_temp or 0.0
             if cur < _MIN_VALID_TEMP:
                 return
