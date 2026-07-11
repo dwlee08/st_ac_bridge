@@ -36,7 +36,8 @@ logger = logging.getLogger(__name__)
 # (제어 루프가 유닛 공용 1개라, 유닛별 차등은 반드시 상태(IcoolState)에 있어야 한다.)
 MARGIN = 0.5          # 무풍 켜고 끄는 경계 여유폭(℃)
 BLOW_OFFSET = 1.0     # 강풍 단계 설정온도 = 목표 - 이 값(℃)
-FAN_BLOW = "high"     # blow 단계 풍량 (기본 강풍)
+FAN_BLOW = "high"     # 냉방(blow) 단계 풍량 (기본 강풍)
+VANE_BLOW = "all"     # 냉방(blow) 단계 풍향 모드 (기본 모든 방향)
 HUM_LOW = 65          # 이 습도(%RH) 이하면 체감온도 보정 없음
 HUM_HIGH = 80         # 이 습도 이상이면 최대 보정 (사이 구간은 선형)
 HUM_BIAS_MAX = 1.0    # 체감온도 최대 보정(℃)
@@ -44,6 +45,14 @@ TICK_SEC = 5          # 제어 루프 주기(초) — 루프가 1개라 유닛 �
 _MIN_VALID_TEMP = 5.0  # 실측 온도가 이 미만이면 아직 미수신으로 보고 제어 보류
 
 _BLOW_FANS = {"auto", "low", "medium", "high"}
+
+# 냉방 단계 풍향 모드 → (수직 스윙, 수평 스윙)
+_VANE_MODES = {
+    "fixed":      (False, False),   # 고정
+    "vertical":   (True,  False),   # 수직
+    "horizontal": (False, True),    # 수평
+    "all":        (True,  True),    # 모든 방향
+}
 
 
 def _clamp(t: float) -> float:
@@ -82,6 +91,7 @@ class IcoolState:
     hum_high: int = HUM_HIGH
     hum_bias_max: float = HUM_BIAS_MAX
     blow_fan: str = FAN_BLOW
+    blow_vane: str = VANE_BLOW
     # 유닛별 락 — 한 유닛의 AC 명령 대기가 다른 유닛의 tick/start/stop을 막지 않도록
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
 
@@ -121,6 +131,8 @@ def _apply_config(st: IcoolState, config: dict) -> None:
         st.hum_bias_max = hb
     if config.get("blow_fan") in _BLOW_FANS:
         st.blow_fan = config["blow_fan"]
+    if config.get("blow_vane") in _VANE_MODES:
+        st.blow_vane = config["blow_vane"]
     # 상한이 하한 이하면 보정이 계단식이 되고 _hum_bias 0나눗셈 위험 → 최소 1 간격 보장
     if st.hum_high <= st.hum_low:
         st.hum_high = min(100, st.hum_low + 1)
@@ -176,9 +188,10 @@ class IcoolManager:
             st.active = True
             await self._apply_start(ctrl, st, fresh=not was_active)
         logger.info("[icool] %s start target=%.1f "
-                    "(margin=%.2f blow_off=%.2f hum=%d/%d/%.2f fan=%s)",
+                    "(margin=%.2f blow_off=%.2f hum=%d/%d/%.2f fan=%s vane=%s)",
                     uid, st.target,
-                    st.margin, st.blow_offset, st.hum_low, st.hum_high, st.hum_bias_max, st.blow_fan)
+                    st.margin, st.blow_offset, st.hum_low, st.hum_high, st.hum_bias_max,
+                    st.blow_fan, st.blow_vane)
 
     async def set_config(self, uid: str, config: dict) -> None:
         """유닛별 튜닝값 갱신 (엣지 기기 설정 변경 시). 상태를 지연 생성해 start 전에도 보관하며,
@@ -189,8 +202,9 @@ class IcoolManager:
             return
         async with st.lock:
             _apply_config(st, config)
-        logger.info("[icool] %s config margin=%.2f blow_off=%.2f hum=%d/%d/%.2f fan=%s",
-                    uid, st.margin, st.blow_offset, st.hum_low, st.hum_high, st.hum_bias_max, st.blow_fan)
+        logger.info("[icool] %s config margin=%.2f blow_off=%.2f hum=%d/%d/%.2f fan=%s vane=%s",
+                    uid, st.margin, st.blow_offset, st.hum_low, st.hum_high, st.hum_bias_max,
+                    st.blow_fan, st.blow_vane)
 
     async def stop(self, uid: str, reason: str = "user") -> None:
         st = self._states.get(uid)
@@ -324,8 +338,9 @@ class IcoolManager:
 
     @staticmethod
     def _blow_fields(st: IcoolState) -> dict:
+        v, h = _VANE_MODES.get(st.blow_vane, (True, True))
         return dict(wind_free=False, long_wind=False,
-                    vane_vertical=True, vane_horizontal=True,
+                    vane_vertical=v, vane_horizontal=h,
                     fan_mode=st.blow_fan, target_temp=st.cool_sp())
 
     # 실측-목표 온도차로 무풍 여부 결정. 경계는 ±margin 여유폭(유닛별).
@@ -371,9 +386,10 @@ class IcoolManager:
         else:
             if status.wind_free:
                 return True
-            if not (status.vane_vertical and status.vane_horizontal):
+            v, h = _VANE_MODES.get(st.blow_vane, (True, True))   # 유닛별 냉방 단계 풍향
+            if status.vane_vertical != v or status.vane_horizontal != h:
                 return True
-            if status.fan_mode != st.blow_fan:   # 유닛별 강풍 풍량 (_blow_fields와 일치해야 함)
+            if status.fan_mode != st.blow_fan:   # 유닛별 냉방 단계 풍량 (_blow_fields와 일치해야 함)
                 return True
             if abs(status.target_temp - st.cool_sp()) > 0.05:
                 return True
