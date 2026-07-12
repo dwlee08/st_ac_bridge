@@ -34,6 +34,7 @@ class Session:
         outdoor_store: OutdoorStore | None = None,
         icool: IcoolManager | None = None,
         hub: StreamHub | None = None,
+        afterblow=None,
     ) -> None:
         self._reader = reader
         self._writer = writer
@@ -43,6 +44,7 @@ class Session:
         self._outdoor_store = outdoor_store
         self._icool = icool
         self._hub = hub
+        self._afterblow = afterblow
         self._subscribed = False
 
     async def run(self) -> None:
@@ -148,14 +150,38 @@ class Session:
             # 인텔리전트 냉방 상태(활성/남은시간/문구)를 STATUS에 실어 엣지가 그대로 표시
             if self._icool is not None:
                 data.update(self._icool.status(uid))
+            # 스마트 애프터 블로우: 활성 여부 + 송풍 중 power=off 마스킹 (icool 뒤에 적용해 마스킹 우선)
+            if self._afterblow is not None:
+                data.update(self._afterblow.status(uid))
             return ok_response(req.id, data)
 
         if cmd == "SET_POWER":
             on = p.get("on")
             if not isinstance(on, bool):
                 return err_response(req.id, "params.on must be boolean")
+            if self._afterblow is not None:
+                if on:
+                    # 송풍 건조 중 전원 ON → 저장 상태 복원하고 종료(정상 on 대체)
+                    if await self._afterblow.resume(uid):
+                        return ok_response(req.id, self._afterblow.status(uid))
+                else:
+                    # 전원 OFF → 조건 맞으면 바로 끄지 않고 송풍 건조 시작
+                    if await self._afterblow.on_power_off(uid):
+                        return ok_response(req.id, self._afterblow.status(uid))
             await ctrl.set_power(on)
             return ok_response(req.id)
+
+        if cmd == "SET_SMART_DRY":
+            if self._afterblow is None:
+                return err_response(req.id, "after blow not available")
+            on = p.get("on")
+            if not isinstance(on, bool):
+                return err_response(req.id, "params.on must be boolean")
+            ratio = p.get("ratio")
+            max_min = p.get("max_min")
+            min_min = p.get("min_min")
+            await self._afterblow.set_enabled(uid, on, ratio=ratio, max_min=max_min, min_min=min_min)
+            return ok_response(req.id, self._afterblow.status(uid))
 
         if cmd == "SET_MODE":
             mode = p.get("mode")

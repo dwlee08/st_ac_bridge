@@ -23,6 +23,7 @@ class TcpServer:
         unit_labels: dict[str, str] | None = None,
         outdoor_store: OutdoorStore | None = None,
         icool: IcoolManager | None = None,
+        afterblow=None,
         hub: StreamHub | None = None,
     ) -> None:
         self._host = host
@@ -31,6 +32,7 @@ class TcpServer:
         self._unit_labels = unit_labels or {}
         self._outdoor_store = outdoor_store
         self._icool = icool
+        self._afterblow = afterblow
         self._hub = hub
         self._server: asyncio.Server | None = None
 
@@ -55,5 +57,6 @@ class TcpServer:
         session = Session(
             reader, writer, self._controllers, peer_str,
             self._unit_labels, self._outdoor_store, self._icool, self._hub,
+            self._afterblow,
         )
         await session.run()

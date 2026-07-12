@@ -38,10 +38,12 @@ class StreamHub:
         controllers: dict,
         icool: IcoolManager,
         outdoor_store: OutdoorStore | None = None,
+        afterblow=None,
     ) -> None:
         self._controllers = controllers
         self._icool = icool
         self._outdoor_store = outdoor_store
+        self._afterblow = afterblow
         self._subs: set[StreamWriter] = set()
         self._last_unit: dict[str, dict] = {}
         self._last_outdoor: dict = {}
@@ -51,6 +53,8 @@ class StreamHub:
     async def _unit_state(self, uid: str, ctrl, power_w: int | None) -> dict:
         s = (await ctrl.get_status()).to_dict()
         s.update(self._icool.status(uid))          # icool_active/timer_min
+        if self._afterblow is not None:
+            s.update(self._afterblow.status(uid))  # after_blow_enabled + 송풍 중 power 마스킹
         if power_w is not None:
             s["system_power_w"] = power_w           # 실외기 합산 전력을 각 유닛이 echo
         return s

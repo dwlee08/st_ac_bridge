@@ -8,6 +8,7 @@ import os
 import sys
 
 from ac_controller import AcController, MockAcController, RealAcController
+from afterblow import AfterBlowManager
 from ew11_client import EW11Client
 from icool import IcoolManager
 from state_store import OutdoorStore, StateStore
@@ -92,18 +93,23 @@ async def main() -> None:
     icool = IcoolManager(controllers)
     icool_task = asyncio.create_task(icool.run_loop(), name="icool-loop")
 
+    # 스마트 애프터 블로우 매니저 + 루프 (전원 OFF 시 송풍 건조)
+    afterblow = AfterBlowManager(controllers, icool)
+    afterblow_task = asyncio.create_task(afterblow.run_loop(), name="afterblow-loop")
+
     # 이벤트 스트림 허브 (구독자에게 상태 변경 push) + 변경 감지 스윕
-    hub = StreamHub(controllers, icool, outdoor_store)
+    hub = StreamHub(controllers, icool, outdoor_store, afterblow)
     hub_task = asyncio.create_task(hub.run_loop(), name="stream-hub")
 
     server = TcpServer(
         host=host, port=port, controllers=controllers,
-        unit_labels=unit_labels, outdoor_store=outdoor_store, icool=icool, hub=hub,
+        unit_labels=unit_labels, outdoor_store=outdoor_store,
+        icool=icool, afterblow=afterblow, hub=hub,
     )
     try:
         await server.serve_forever()
     finally:
-        for task in (ew11_task, icool_task, hub_task):
+        for task in (ew11_task, icool_task, afterblow_task, hub_task):
             if task:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
