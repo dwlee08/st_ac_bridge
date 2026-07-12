@@ -83,6 +83,9 @@ class AfterBlowManager:
     def status(self, uid: str) -> dict:
         st = self._states.get(uid)
         out = {"after_blow_enabled": bool(st and st.enabled)}
+        if st and st.enabled:
+            # 기능 on이면 엣지엔 자동건조 off로 표시(실제 AC 자동건조는 사이클 직전에만 끔).
+            out["auto_clean"] = False
         if st and st.drying:
             out["power"] = False   # 송풍 중 내부 전원 OFF로 마스킹
         return out
@@ -162,8 +165,12 @@ class AfterBlowManager:
         logger.info("[afterblow] loop started (tick=%ds)", TICK_SEC)
         while True:
             try:
-                for uid, st in list(self._states.items()):
-                    await self._tick(uid, st)
+                # 기능 활성 여부와 무관하게 모든 유닛을 tick — 전원 ON 시각을 항상 추적해,
+                # 동작 중에 스마트 애프터 블로우를 켜도 작동 시간을 정확히 반영한다.
+                for uid in list(self._controllers.keys()):
+                    st = self._state(uid)
+                    if st is not None:
+                        await self._tick(uid, st)
             except Exception:
                 logger.exception("[afterblow] tick error")
             await asyncio.sleep(TICK_SEC)
