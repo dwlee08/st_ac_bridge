@@ -12,33 +12,20 @@ class StateStore {
     suspend fun get(): AcStatus = mutex.withLock {
         var result = reported
         for ((k, v) in desired) {
-            result = when (k) {
-                "power" -> result.copy(power = v as Boolean)
-                "mode" -> result.copy(mode = v as String)
-                "target_temp" -> result.copy(targetTemp = (v as Number).toFloat())
-                "current_temp" -> result.copy(currentTemp = (v as? Number)?.toFloat())
-                "humidity" -> result.copy(humidity = (v as? Number)?.toInt())
-                "fan_mode" -> result.copy(fanMode = v as String)
-                "vane_vertical" -> result.copy(vaneVertical = v as Boolean)
-                "vane_horizontal" -> result.copy(vaneHorizontal = v as Boolean)
-                "wind_free" -> result.copy(windFree = v as Boolean)
-                "long_wind" -> result.copy(longWind = v as Boolean)
-                "auto_clean" -> result.copy(autoClean = v as Boolean)
-                else -> result
-            }
+            result = applyField(result, k, v)
         }
         return@withLock result
     }
 
-    suspend fun update(vararg updates: Pair<String, Any?>) = mutex.withLock {
+    suspend fun update(updates: Map<String, Any?>) = mutex.withLock {
         updates.forEach { (k, v) ->
             if (isValidField(k)) {
-                setField(k, v)
+                reported = applyField(reported, k, v)
             }
         }
     }
 
-    suspend fun setDesired(vararg updates: Pair<String, Any?>) = mutex.withLock {
+    suspend fun setDesired(updates: Map<String, Any?>) = mutex.withLock {
         updates.forEach { (k, v) ->
             if (isDesiredField(k)) {
                 desired[k] = v
@@ -50,20 +37,20 @@ class StateStore {
         desired.clear()
     }
 
-    private fun setField(key: String, value: Any?) {
-        reported = when (key) {
-            "power" -> reported.copy(power = value as Boolean)
-            "mode" -> reported.copy(mode = value as String)
-            "target_temp" -> reported.copy(targetTemp = (value as Number).toFloat())
-            "current_temp" -> reported.copy(currentTemp = (value as? Number)?.toFloat())
-            "humidity" -> reported.copy(humidity = (value as? Number)?.toInt())
-            "fan_mode" -> reported.copy(fanMode = value as String)
-            "vane_vertical" -> reported.copy(vaneVertical = value as Boolean)
-            "vane_horizontal" -> reported.copy(vaneHorizontal = value as Boolean)
-            "wind_free" -> reported.copy(windFree = value as Boolean)
-            "long_wind" -> reported.copy(longWind = value as Boolean)
-            "auto_clean" -> reported.copy(autoClean = value as Boolean)
-            else -> reported
+    private fun applyField(status: AcStatus, key: String, value: Any?): AcStatus {
+        return when (key) {
+            "power" -> status.copy(power = value as Boolean)
+            "mode" -> status.copy(mode = value as String)
+            "target_temp" -> status.copy(targetTemp = (value as Number).toFloat())
+            "current_temp" -> status.copy(currentTemp = (value as? Number)?.toFloat())
+            "humidity" -> status.copy(humidity = (value as? Number)?.toInt())
+            "fan_mode" -> status.copy(fanMode = value as String)
+            "vane_vertical" -> status.copy(vaneVertical = value as Boolean)
+            "vane_horizontal" -> status.copy(vaneHorizontal = value as Boolean)
+            "wind_free" -> status.copy(windFree = value as Boolean)
+            "long_wind" -> status.copy(longWind = value as Boolean)
+            "auto_clean" -> status.copy(autoClean = value as Boolean)
+            else -> status
         }
     }
 

@@ -3,6 +3,7 @@ package com.samsung.ac.bridge.network
 import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.JsonObject
+import com.samsung.ac.bridge.afterblow.AfterBlowManager
 import com.samsung.ac.bridge.icool.IcoolManager
 import com.samsung.ac.bridge.state.StateStore
 import kotlinx.coroutines.*
@@ -16,6 +17,7 @@ class TcpServer(
     private val port: Int = 8888,
     private val stores: Map<String, StateStore>,
     private val icoolManager: IcoolManager,
+    private val afterblowManager: AfterBlowManager,
 ) {
     private val gson = Gson()
     private var serverSocket: ServerSocket? = null
@@ -79,7 +81,8 @@ class TcpServer(
                 val store = stores[uid] ?: return errorResponse(id, "unknown unit")
                 val status = store.get()
                 val icoolStatus = icoolManager.status(uid)
-                okResponse(id, status.toMap() + icoolStatus)
+                val afterblowStatus = afterblowManager.status(uid)
+                okResponse(id, status.toMap() + icoolStatus + afterblowStatus)
             }
 
             "SET_ICOOL" -> {
@@ -87,11 +90,11 @@ class TcpServer(
                 val on = req.get("on")?.asBoolean ?: false
                 val target = req.get("target")?.asFloat
                 val config = req.getAsJsonObject("config")?.let {
-                    it.entrySet().associate { (k, v) -> k to v }
+                    it.entrySet().associate { (k, v) -> k to v.asString }
                 }
 
                 if (on) {
-                    icoolManager.start(uid, target, config?.mapValues { (_, v) -> v.asString })
+                    icoolManager.start(uid, target, config)
                 } else {
                     icoolManager.stop(uid)
                 }
@@ -103,6 +106,25 @@ class TcpServer(
                 val duration = req.get("duration")?.asInt ?: 0
                 icoolManager.setDuration(uid, duration)
                 okResponse(id, icoolManager.status(uid))
+            }
+
+            "SET_ICOOL_CONFIG" -> {
+                val uid = req.get("uid")?.asString ?: return errorResponse(id, "missing uid")
+                val config = req.getAsJsonObject("config")?.let {
+                    it.entrySet().associate { (k, v) -> k to v.asString }
+                } ?: emptyMap()
+                // TODO: icoolManager.setConfig(uid, config)
+                okResponse(id, icoolManager.status(uid))
+            }
+
+            "SET_AFTERBLOW" -> {
+                val uid = req.get("uid")?.asString ?: return errorResponse(id, "missing uid")
+                val on = req.get("on")?.asBoolean ?: false
+                val ratio = req.get("ratio")?.asInt
+                val maxMin = req.get("max_min")?.asInt
+                val minMin = req.get("min_min")?.asInt
+                afterblowManager.setEnabled(uid, on, ratio, maxMin, minMin)
+                okResponse(id, afterblowManager.status(uid))
             }
 
             "SUBSCRIBE" -> {

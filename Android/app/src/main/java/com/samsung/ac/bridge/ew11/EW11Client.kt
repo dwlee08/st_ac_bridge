@@ -1,6 +1,7 @@
 package com.samsung.ac.bridge.ew11
 
 import android.util.Log
+import com.samsung.ac.bridge.protocol.*
 import com.samsung.ac.bridge.state.StateStore
 import kotlinx.coroutines.*
 import java.net.Socket
@@ -15,8 +16,8 @@ class EW11Client(
     private var reader: Socket.InputStream? = null
     private var writer: Socket.OutputStream? = null
     private val sendLock = Any()
-    private val buf = ByteArray(8192)
     private var lastRxTime = System.currentTimeMillis()
+    private var rxBuffer = byteArrayOf()
 
     val isConnected: Boolean
         get() = socket?.isConnected == true && !socket!!.isClosed
@@ -26,6 +27,7 @@ class EW11Client(
             socket = Socket(host, port)
             reader = socket!!.getInputStream()
             writer = socket!!.getOutputStream()
+            rxBuffer = byteArrayOf()
             Log.i(TAG, "EW11 connected: $host:$port")
             true
         } catch (e: Exception) {
@@ -48,6 +50,7 @@ class EW11Client(
         synchronized(sendLock) {
             if (!isConnected) throw RuntimeException("EW11 not connected")
             try {
+                waitBusIdle()
                 writer?.write(data)
                 writer?.flush()
                 Log.i(TAG, "EW11 TX: ${data.joinToString("") { "%02x".format(it) }}")
@@ -58,15 +61,16 @@ class EW11Client(
         }
     }
 
-    suspend fun receiveLoop(onPacket: suspend (data: ByteArray) -> Unit) = withContext(Dispatchers.IO) {
+    suspend fun receiveLoop() = withContext(Dispatchers.IO) {
         val buffer = ByteArray(8192)
         while (isActive) {
             try {
                 val n = reader?.read(buffer) ?: return@withContext
                 if (n > 0) {
                     lastRxTime = System.currentTimeMillis()
+                    rxBuffer += buffer.sliceArray(0 until n)
                     Log.d(TAG, "EW11 RX: ${buffer.take(n).joinToString("") { "%02x".format(it) }}")
-                    onPacket(buffer.take(n).toByteArray())
+                    processPackets()
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "EW11 receive error", e)
@@ -75,6 +79,41 @@ class EW11Client(
                 }
             }
         }
+    }
+
+    private suspend fun processPackets() {
+        val (packets, remaining) = PacketParser.extractPackets(rxBuffer)
+        rxBuffer = remaining
+
+        for (pkt in packets) {
+            when (pkt.msgType) {
+                PacketProtocol.MSG_TYPE_STATUS -> handleStatus(pkt)
+                PacketProtocol.MSG_TYPE_ACK -> handleAck(pkt)
+                else -> Log.d(TAG, "Unknown message type: ${pkt.msgType.toString(16)}")
+            }
+        }
+    }
+
+    private suspend fun handleStatus(pkt: ParsedPacket) {
+        val src = pkt.src
+        if (src.size >= 3) {
+            val uid = src.joinToString("") { "%02X".format(it) }
+            val updates = when {
+                src[0].toInt() == 0x10 -> StateDecoder.decodeOutdoorCodes(pkt.codes)
+                else -> StateDecoder.decodeCodes(pkt.codes)
+            }
+            val store = stores[uid]
+            if (store != null) {
+                store.update(updates)
+                Log.d(TAG, "Updated $uid: $updates")
+            } else {
+                Log.d(TAG, "Unknown unit: $uid")
+            }
+        }
+    }
+
+    private suspend fun handleAck(pkt: ParsedPacket) {
+        Log.i(TAG, "ACK received from ${pkt.src.joinToString("") { "%02X".format(it) }}")
     }
 
     private suspend fun waitBusIdle() {

@@ -48,12 +48,34 @@ data class AcStatus(
 
 data class OutdoorStatus(
     val powerW: Int? = null,
-    val energyWh: Int? = null,
+    val cumulativeEnergyWh: Int? = null,
     val outdoorTemp: Float? = null,
+    val currentA: Float? = null,
+    val voltageV: Int? = null,
+    val oduMode: String = "STOP",
+    val heatCool: String = "Undef",
 ) {
     fun toMap(): Map<String, Any?> = mapOf(
         "power_w" to powerW,
-        "energy_wh" to energyWh,
+        "cumulative_energy_wh" to cumulativeEnergyWh,
         "outdoor_temp" to outdoorTemp,
+        "current_a" to currentA,
+        "voltage_v" to voltageV,
+        "odu_mode" to oduMode,
+        "heat_cool" to heatCool,
     )
+
+    companion object {
+        fun fromMap(map: Map<String, Any?>): OutdoorStatus {
+            return OutdoorStatus(
+                powerW = (map["power_w"] as? Number)?.toInt(),
+                cumulativeEnergyWh = (map["cumulative_energy_wh"] as? Number)?.toInt(),
+                outdoorTemp = (map["outdoor_temp"] as? Number)?.toFloat(),
+                currentA = (map["current_a"] as? Number)?.toFloat(),
+                voltageV = (map["voltage_v"] as? Number)?.toInt(),
+                oduMode = (map["odu_mode"] as? String) ?: "STOP",
+                heatCool = (map["heat_cool"] as? String) ?: "Undef",
+            )
+        }
+    }
 }

@@ -9,7 +9,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import com.samsung.ac.bridge.R
+import com.samsung.ac.bridge.afterblow.AfterBlowManager
 import com.samsung.ac.bridge.ew11.EW11Client
 import com.samsung.ac.bridge.icool.IcoolManager
 import com.samsung.ac.bridge.network.TcpServer
@@ -21,6 +21,7 @@ class BridgeService : Service() {
     private lateinit var ew11: EW11Client
     private lateinit var tcpServer: TcpServer
     private lateinit var icoolManager: IcoolManager
+    private lateinit var afterblowManager: AfterBlowManager
     private val stores = mutableMapOf<String, StateStore>()
 
     override fun onCreate() {
@@ -42,7 +43,8 @@ class BridgeService : Service() {
             try {
                 // Initialize managers
                 icoolManager = IcoolManager(stores)
-                tcpServer = TcpServer(serverPort, stores, icoolManager)
+                afterblowManager = AfterBlowManager(stores, icoolManager)
+                tcpServer = TcpServer(serverPort, stores, icoolManager, afterblowManager)
                 ew11 = EW11Client(ew11Host, ew11Port, stores)
 
                 // Start TCP server
@@ -56,9 +58,7 @@ class BridgeService : Service() {
                         if (!ew11.isConnected) {
                             if (ew11.connect()) {
                                 Log.i(TAG, "EW11 connected")
-                                ew11.receiveLoop { data ->
-                                    handleEW11Packet(data)
-                                }
+                                ew11.receiveLoop()
                             } else {
                                 Log.w(TAG, "EW11 connection failed, retrying...")
                                 delay(5000)
@@ -72,6 +72,11 @@ class BridgeService : Service() {
                 // Start icool control loop
                 launch {
                     icoolManager.runLoop()
+                }
+
+                // Start afterblow control loop
+                launch {
+                    afterblowManager.runLoop()
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Service initialization error", e)
@@ -89,16 +94,6 @@ class BridgeService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
-
-    private suspend fun handleEW11Packet(data: ByteArray) {
-        // Parse packet and update state
-        try {
-            // TODO: Parse C014, C016, etc.
-            Log.d(TAG, "EW11 packet received: ${data.size} bytes")
-        } catch (e: Exception) {
-            Log.e(TAG, "Packet parsing error", e)
-        }
-    }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -118,7 +113,7 @@ class BridgeService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("AC Bridge")
             .setContentText("Bridge service is running")
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }
