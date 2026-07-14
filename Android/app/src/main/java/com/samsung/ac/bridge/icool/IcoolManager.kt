@@ -1,6 +1,7 @@
 package com.samsung.ac.bridge.icool
 
 import android.util.Log
+import com.samsung.ac.bridge.ac.AcController
 import com.samsung.ac.bridge.protocol.AcStatus
 import com.samsung.ac.bridge.state.StateStore
 import kotlinx.coroutines.*
@@ -28,7 +29,10 @@ class IcoolState(
     var blowVane: String = VANE_BLOW,
 )
 
-class IcoolManager(private val stores: Map<String, StateStore>) {
+class IcoolManager(
+    private val stores: Map<String, StateStore>,
+    private val controllers: Map<String, AcController> = emptyMap(),
+) {
     private val states = mutableMapOf<String, IcoolState>()
 
     fun status(uid: String): Map<String, Any> {
@@ -99,6 +103,7 @@ class IcoolManager(private val stores: Map<String, StateStore>) {
     }
 
     private suspend fun checkTimer(uid: String, st: IcoolState) {
+        val ctrl = controllers[uid] ?: return
         val store = stores[uid] ?: return
         val status = store.get()
         val powered = status.power
@@ -118,7 +123,7 @@ class IcoolManager(private val stores: Map<String, StateStore>) {
             st.timerLast = null
             st.durationMin = 0
             st.active = false
-            // TODO: send power off command
+            ctrl.setPower(false)
             Log.i(TAG, "$uid timer expired → AC power OFF")
         }
     }
@@ -138,18 +143,22 @@ class IcoolManager(private val stores: Map<String, StateStore>) {
     }
 
     private suspend fun control(uid: String, st: IcoolState, status: AcStatus, cur: Float, humidity: Int?) {
+        val ctrl = controllers[uid] ?: return
         val eff = cur + humBias(humidity, st.humLow, st.humHigh, st.humBiasMax)
         val wf = decide(eff, st.target, st.windFree, st.margin)
         if (wf && !st.windFree) {
             st.windFree = true
-            Log.i(TAG, "$uid 체감 $eff<목표 → 무풍 ON")
+            ctrl.applySettings(windFreeFields(st))
+            Log.i(TAG, "$uid 체감 $eff<목표 → 무풍 ON, 설정 ${st.target}")
         } else if (!wf && st.windFree) {
             st.windFree = false
-            Log.i(TAG, "$uid 체감 $eff>목표 → 무풍 OFF")
+            ctrl.applySettings(blowFields(st))
+            Log.i(TAG, "$uid 체감 $eff>목표 → 무풍 OFF, 강풍, 설정 ${st.coolSp()}")
         }
     }
 
     private suspend fun applyStart(st: IcoolState, store: StateStore, fresh: Boolean) {
+        val ctrl = controllers[st.uid] ?: return
         val status = store.get()
         if (fresh) {
             st.savedState = status.copy()
@@ -157,9 +166,42 @@ class IcoolManager(private val stores: Map<String, StateStore>) {
         val cur = status.currentTemp ?: 0f
         val eff = cur + humBias(status.humidity, st.humLow, st.humHigh, st.humBiasMax)
         val wf = cur >= MIN_VALID_TEMP && decide(eff, st.target, false, st.margin)
+        val stage = if (wf) windFreeFields(st) else blowFields(st)
+        ctrl.applySettings(mapOf("power" to true, "mode" to "cool") + stage)
         st.windFree = wf
-        // TODO: send apply_settings to AC
     }
+
+    private fun windFreeFields(st: IcoolState): Map<String, Any?> = mapOf(
+        "wind_free" to true,
+        "long_wind" to false,
+        "vane_vertical" to false,
+        "vane_horizontal" to false,
+        "target_temp" to clamp(st.target),
+    )
+
+    private fun blowFields(st: IcoolState): Map<String, Any?> {
+        val (v, h) = vaneModePair(st.blowVane)
+        return mapOf(
+            "wind_free" to false,
+            "long_wind" to false,
+            "vane_vertical" to v,
+            "vane_horizontal" to h,
+            "fan_mode" to st.blowFan,
+            "target_temp" to st.coolSp(),
+        )
+    }
+
+    private fun vaneModePair(mode: String): Pair<Boolean, Boolean> {
+        return when (mode) {
+            "fixed" -> false to false
+            "vertical" -> true to false
+            "horizontal" -> false to true
+            "all" -> true to true
+            else -> true to true
+        }
+    }
+
+    private fun IcoolState.coolSp() = clamp(target - blowOffset)
 
     private fun deviated(status: AcStatus, st: IcoolState): Boolean {
         if (!status.power) return true
@@ -176,8 +218,20 @@ class IcoolManager(private val stores: Map<String, StateStore>) {
     }
 
     private suspend fun restore(uid: String, saved: AcStatus?, reason: String) {
-        // TODO: send restore command to AC
-        Log.i(TAG, "$uid restored ($reason)")
+        val ctrl = controllers[uid] ?: return
+        if (saved == null) return
+        val settings = mapOf(
+            "power" to saved.power,
+            "mode" to saved.mode,
+            "target_temp" to saved.targetTemp,
+            "fan_mode" to saved.fanMode,
+            "vane_vertical" to saved.vaneVertical,
+            "vane_horizontal" to saved.vaneHorizontal,
+            "wind_free" to saved.windFree,
+            "long_wind" to saved.longWind,
+        )
+        ctrl.applySettings(settings)
+        Log.i(TAG, "$uid restored ($reason): $saved")
     }
 
     private fun applyConfig(st: IcoolState, config: Map<String, Any?>) {

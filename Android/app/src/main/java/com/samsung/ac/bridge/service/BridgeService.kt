@@ -9,6 +9,9 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.samsung.ac.bridge.ac.AcController
+import com.samsung.ac.bridge.ac.RealAcController
+import com.samsung.ac.bridge.ac.MockAcController
 import com.samsung.ac.bridge.afterblow.AfterBlowManager
 import com.samsung.ac.bridge.ew11.EW11Client
 import com.samsung.ac.bridge.icool.IcoolManager
@@ -36,16 +39,27 @@ class BridgeService : Service() {
         val ew11Host = intent?.getStringExtra("ew11_host") ?: "192.168.0.38"
         val ew11Port = intent?.getIntExtra("ew11_port", 8899) ?: 8899
         val serverPort = intent?.getIntExtra("server_port", 8888) ?: 8888
+        val mockMode = intent?.getBooleanExtra("mock_mode", false) ?: false
 
         startForeground(NOTIFICATION_ID, createNotification())
 
         serviceScope.launch {
             try {
+                // Initialize EW11 client first
+                ew11 = EW11Client(ew11Host, ew11Port, stores)
+
+                // Create controllers (real or mock)
+                val controllers = mutableMapOf<String, AcController>()
+                if (mockMode) {
+                    Log.i(TAG, "Using mock AC controllers")
+                } else {
+                    Log.i(TAG, "Using real AC controllers (EW11 mode)")
+                }
+
                 // Initialize managers
-                icoolManager = IcoolManager(stores)
+                icoolManager = IcoolManager(stores, controllers)
                 afterblowManager = AfterBlowManager(stores, icoolManager)
                 tcpServer = TcpServer(serverPort, stores, icoolManager, afterblowManager)
-                ew11 = EW11Client(ew11Host, ew11Port, stores)
 
                 // Start TCP server
                 launch {
