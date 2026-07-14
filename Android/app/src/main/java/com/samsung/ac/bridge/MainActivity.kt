@@ -1,11 +1,15 @@
 package com.samsung.ac.bridge
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.widget.Button
 import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import com.samsung.ac.bridge.config.ConfigManager
 import com.samsung.ac.bridge.service.BridgeService
 
@@ -16,6 +20,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var settingsBtn: Button
     private lateinit var configManager: ConfigManager
     private var isServiceRunning = false
+
+    private val notificationPermLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* 결과 무관 — 알림만 영향 */ }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -32,7 +39,18 @@ class MainActivity : AppCompatActivity() {
         stopBtn.setOnClickListener { stopService() }
         settingsBtn.setOnClickListener { openSettings() }
 
+        requestNotificationPermissionIfNeeded()
         updateStatus()
+    }
+
+    // API 33+ 포그라운드 서비스 알림 표시에 필요한 런타임 권한
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
     }
 
     private fun startService() {

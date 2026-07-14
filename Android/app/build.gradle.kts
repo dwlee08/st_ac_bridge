@@ -1,7 +1,6 @@
 plugins {
     id("com.android.application")
-    kotlin("android")
-    kotlin("kapt")
+    id("org.jetbrains.kotlin.android")
 }
 
 android {
@@ -49,23 +48,9 @@ dependencies {
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
-
-    // Lifecycle
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
-    implementation("androidx.lifecycle:lifecycle-service:2.6.2")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.6.2")
-
-    // Room (for state persistence)
-    implementation("androidx.room:room-runtime:2.6.1")
-    kapt("androidx.room:room-compiler:2.6.1")
-    implementation("androidx.room:room-ktx:2.6.1")
 
     // JSON
     implementation("com.google.code.gson:gson:2.10.1")
-
-    // Logging
-    implementation("com.jakewharton.timber:timber:5.0.1")
 
     // Testing
     testImplementation("junit:junit:4.13.2")

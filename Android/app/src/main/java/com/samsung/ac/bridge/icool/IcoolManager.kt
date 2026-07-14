@@ -3,11 +3,19 @@ package com.samsung.ac.bridge.icool
 import android.util.Log
 import com.samsung.ac.bridge.ac.AcController
 import com.samsung.ac.bridge.protocol.AcStatus
+import com.samsung.ac.bridge.protocol.PacketProtocol
 import com.samsung.ac.bridge.state.StateStore
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
+
+// 설정온도 클램프는 프로토콜의 유효 범위(18~30℃)와 일치해야 한다. IcoolState/IcoolManager 공용.
+internal fun clampTemp(t: Float) = max(PacketProtocol.TEMP_MIN, min(PacketProtocol.TEMP_MAX, t))
 
 class IcoolState(
     val uid: String,
@@ -27,18 +35,24 @@ class IcoolState(
     var humBiasMax: Float = HUM_BIAS_MAX,
     var blowFan: String = FAN_BLOW,
     var blowVane: String = VANE_BLOW,
-)
+) {
+    // 유닛별 락 — 한 유닛의 AC 명령 대기가 다른 유닛의 tick/start/stop을 막지 않도록.
+    val lock = Mutex()
+
+    fun coolSp() = clampTemp(target - blowOffset)
+}
 
 class IcoolManager(
-    private val stores: Map<String, StateStore>,
+    private val stores: MutableMap<String, StateStore>,
     private val controllers: Map<String, AcController> = emptyMap(),
 ) {
-    private val states = mutableMapOf<String, IcoolState>()
+    private val states = ConcurrentHashMap<String, IcoolState>()
 
     fun status(uid: String): Map<String, Any> {
         val st = states[uid] ?: return mapOf("icool_active" to false, "timer_min" to 0)
+        val timerSec = st.timerSec
         val timerMin = when {
-            st.timerSec != null -> max(1, (st.timerSec!! / 60).toInt())
+            timerSec != null -> max(1, ceil(timerSec / 60.0).toInt())
             st.durationMin < 0 -> -1
             else -> 0
         }
@@ -51,36 +65,50 @@ class IcoolManager(
             return
         }
         val st = states.getOrPut(uid) { IcoolState(uid) }
-        val wasActive = st.active
-        if (config != null) applyConfig(st, config)
-        if (target != null) st.target = clamp(target)
-        st.active = true
-        applyStart(st, store, fresh = !wasActive)
+        st.lock.withLock {
+            val wasActive = st.active
+            if (config != null) applyConfig(st, config)
+            if (target != null) st.target = clampTemp(target)
+            st.active = true
+            applyStart(st, store, fresh = !wasActive)
+        }
         Log.i(TAG, "$uid icool start target=${st.target}")
+    }
+
+    suspend fun setConfig(uid: String, config: Map<String, Any?>) {
+        val st = states.getOrPut(uid) { IcoolState(uid) }
+        st.lock.withLock { applyConfig(st, config) }
+        Log.i(TAG, "$uid icool config margin=${st.margin} blow_off=${st.blowOffset} " +
+                "hum=${st.humLow}/${st.humHigh}/${st.humBiasMax} fan=${st.blowFan} vane=${st.blowVane}")
     }
 
     suspend fun stop(uid: String, reason: String = "user") {
         val st = states[uid] ?: return
-        if (!st.active) return
-        st.active = false
-        val saved = st.savedState
-        st.savedState = null
+        val saved: AcStatus?
+        st.lock.withLock {
+            if (!st.active) return
+            st.active = false
+            saved = st.savedState
+            st.savedState = null
+        }
         Log.i(TAG, "$uid icool stop ($reason)")
         restore(uid, saved, reason)
     }
 
     suspend fun setDuration(uid: String, durationMin: Int) {
         val st = states.getOrPut(uid) { IcoolState(uid) }
-        val m = if (durationMin < 0) -1 else min(720, durationMin)
-        st.durationMin = m
-        if (m > 0) {
-            st.timerSec = (m * 60).toFloat()
-            st.timerLast = System.currentTimeMillis()
-        } else {
-            st.timerSec = null
-            st.timerLast = null
+        st.lock.withLock {
+            val m = if (durationMin < 0) -1 else min(720, durationMin)
+            st.durationMin = m
+            if (m > 0) {
+                st.timerSec = (m * 60).toFloat()
+                st.timerLast = System.currentTimeMillis()
+            } else {
+                st.timerSec = null
+                st.timerLast = null
+            }
+            Log.i(TAG, "$uid timer set ${m}min")
         }
-        Log.i(TAG, "$uid timer set ${m}min")
     }
 
     suspend fun runLoop() = coroutineScope {
@@ -96,54 +124,58 @@ class IcoolManager(
     }
 
     private suspend fun tickAll() {
-        for ((uid, st) in states.toList()) {
+        for ((uid, st) in states) {
             if (st.timerSec != null) checkTimer(uid, st)
             if (st.active) tick(uid, st)
         }
     }
 
+    // 타이머(icool과 분리): 전원 ON일 때만 감소, 0 도달 시 AC 전원 OFF.
     private suspend fun checkTimer(uid: String, st: IcoolState) {
         val ctrl = controllers[uid] ?: return
         val store = stores[uid] ?: return
-        val status = store.get()
-        val powered = status.power
-        val now = System.currentTimeMillis()
-        if (st.timerSec == null) return
-        if (!powered) {
+        val powered = store.get().power
+        var expired = false
+        st.lock.withLock {
+            if (st.timerSec == null) return
+            val now = System.currentTimeMillis()
+            if (!powered) {
+                st.timerLast = now
+                return
+            }
+            st.timerLast?.let { st.timerSec = st.timerSec!! - (now - it) / 1000f }
             st.timerLast = now
-            return
+            if (st.timerSec!! <= 0) {
+                st.timerSec = null
+                st.timerLast = null
+                st.durationMin = 0
+                st.active = false
+                expired = true
+            }
         }
-        if (st.timerLast != null) {
-            val elapsed = (now - st.timerLast!!) / 1000f
-            st.timerSec = st.timerSec!! - elapsed
-        }
-        st.timerLast = now
-        if (st.timerSec!! <= 0) {
-            st.timerSec = null
-            st.timerLast = null
-            st.durationMin = 0
-            st.active = false
+        if (expired) {
             ctrl.setPower(false)
             Log.i(TAG, "$uid timer expired → AC power OFF")
         }
     }
 
     private suspend fun tick(uid: String, st: IcoolState) {
-        val store = stores[uid] ?: return
-        val status = store.get()
-        if (!st.active) return
-        if (deviated(status, st)) {
-            st.active = false
-            Log.i(TAG, "$uid icool stop (external change)")
-            return
+        val ctrl = controllers[uid] ?: return
+        val status = stores[uid]?.get() ?: return
+        st.lock.withLock {
+            if (!st.active) return
+            if (deviated(status, st)) {
+                st.active = false
+                Log.i(TAG, "$uid icool stop (external change)")
+                return
+            }
+            val cur = status.currentTemp ?: return
+            if (cur < MIN_VALID_TEMP) return
+            control(uid, ctrl, st, cur, status.humidity)
         }
-        val cur = status.currentTemp ?: return
-        if (cur < MIN_VALID_TEMP) return
-        control(uid, st, status, cur, status.humidity)
     }
 
-    private suspend fun control(uid: String, st: IcoolState, status: AcStatus, cur: Float, humidity: Int?) {
-        val ctrl = controllers[uid] ?: return
+    private suspend fun control(uid: String, ctrl: AcController, st: IcoolState, cur: Float, humidity: Int?) {
         val eff = cur + humBias(humidity, st.humLow, st.humHigh, st.humBiasMax)
         val wf = decide(eff, st.target, st.windFree, st.margin)
         if (wf && !st.windFree) {
@@ -160,9 +192,7 @@ class IcoolManager(
     private suspend fun applyStart(st: IcoolState, store: StateStore, fresh: Boolean) {
         val ctrl = controllers[st.uid] ?: return
         val status = store.get()
-        if (fresh) {
-            st.savedState = status.copy()
-        }
+        if (fresh) st.savedState = status.copy()
         val cur = status.currentTemp ?: 0f
         val eff = cur + humBias(status.humidity, st.humLow, st.humHigh, st.humBiasMax)
         val wf = cur >= MIN_VALID_TEMP && decide(eff, st.target, false, st.margin)
@@ -176,7 +206,7 @@ class IcoolManager(
         "long_wind" to false,
         "vane_vertical" to false,
         "vane_horizontal" to false,
-        "target_temp" to clamp(st.target),
+        "target_temp" to clampTemp(st.target),
     )
 
     private fun blowFields(st: IcoolState): Map<String, Any?> {
@@ -191,28 +221,19 @@ class IcoolManager(
         )
     }
 
-    private fun vaneModePair(mode: String): Pair<Boolean, Boolean> {
-        return when (mode) {
-            "fixed" -> false to false
-            "vertical" -> true to false
-            "horizontal" -> false to true
-            "all" -> true to true
-            else -> true to true
-        }
-    }
-
-    private fun IcoolState.coolSp() = clamp(target - blowOffset)
-
+    // 예상 상태와 어긋나면(외부 조작) icool 종료. Python _deviated 대응.
     private fun deviated(status: AcStatus, st: IcoolState): Boolean {
         if (!status.power) return true
         if (status.mode != "cool") return true
         if (st.windFree) {
             if (!status.windFree) return true
-            if (abs(status.targetTemp - st.target) > 0.05f) return true
+            if (abs(status.targetTemp - clampTemp(st.target)) > 0.05f) return true
         } else {
             if (status.windFree) return true
+            val (v, h) = vaneModePair(st.blowVane)
+            if (status.vaneVertical != v || status.vaneHorizontal != h) return true
             if (status.fanMode != st.blowFan) return true
-            if (abs(status.targetTemp - st.target + st.blowOffset) > 0.05f) return true
+            if (abs(status.targetTemp - st.coolSp()) > 0.05f) return true
         }
         return false
     }
@@ -220,31 +241,33 @@ class IcoolManager(
     private suspend fun restore(uid: String, saved: AcStatus?, reason: String) {
         val ctrl = controllers[uid] ?: return
         if (saved == null) return
-        val settings = mapOf(
-            "power" to saved.power,
-            "mode" to saved.mode,
-            "target_temp" to saved.targetTemp,
-            "fan_mode" to saved.fanMode,
-            "vane_vertical" to saved.vaneVertical,
-            "vane_horizontal" to saved.vaneHorizontal,
-            "wind_free" to saved.windFree,
-            "long_wind" to saved.longWind,
-        )
-        ctrl.applySettings(settings)
-        Log.i(TAG, "$uid restored ($reason): $saved")
+        if (!saved.power) {
+            ctrl.setPower(false)
+            Log.i(TAG, "$uid AC 전원 OFF ($reason, 시작 시 꺼져 있었음)")
+        } else {
+            ctrl.applySettings(mapOf(
+                "power" to true,
+                "mode" to saved.mode,
+                "target_temp" to saved.targetTemp,
+                "fan_mode" to saved.fanMode,
+                "vane_vertical" to saved.vaneVertical,
+                "vane_horizontal" to saved.vaneHorizontal,
+                "wind_free" to saved.windFree,
+                "long_wind" to saved.longWind,
+            ))
+            Log.i(TAG, "$uid 시작 시점 상태로 복원 ($reason)")
+        }
     }
 
     private fun applyConfig(st: IcoolState, config: Map<String, Any?>) {
-        (config["margin"] as? Number)?.let { st.margin = maxOf(0.1f, minOf(5f, it.toFloat())) }
-        (config["blow_offset"] as? Number)?.let { st.blowOffset = maxOf(0f, minOf(5f, it.toFloat())) }
-        (config["hum_low"] as? Number)?.let { st.humLow = maxOf(0, minOf(100, it.toInt())) }
-        (config["hum_high"] as? Number)?.let { st.humHigh = maxOf(0, minOf(100, it.toInt())) }
-        (config["hum_bias_max"] as? Number)?.let { st.humBiasMax = maxOf(0f, minOf(5f, it.toFloat())) }
+        (config["margin"] as? Number)?.let { st.margin = max(0.1f, min(5f, it.toFloat())) }
+        (config["blow_offset"] as? Number)?.let { st.blowOffset = max(0f, min(5f, it.toFloat())) }
+        (config["hum_low"] as? Number)?.let { st.humLow = max(0, min(100, it.toInt())) }
+        (config["hum_high"] as? Number)?.let { st.humHigh = max(0, min(100, it.toInt())) }
+        (config["hum_bias_max"] as? Number)?.let { st.humBiasMax = max(0f, min(5f, it.toFloat())) }
         (config["blow_fan"] as? String)?.takeIf { it in BLOW_FANS }?.let { st.blowFan = it }
         (config["blow_vane"] as? String)?.takeIf { it in VANE_MODES }?.let { st.blowVane = it }
-        if (st.humHigh <= st.humLow) {
-            st.humHigh = min(100, st.humLow + 1)
-        }
+        if (st.humHigh <= st.humLow) st.humHigh = min(100, st.humLow + 1)
     }
 
     companion object {
@@ -261,15 +284,21 @@ class IcoolManager(
         private val BLOW_FANS = setOf("auto", "low", "medium", "high")
         private val VANE_MODES = setOf("fixed", "vertical", "horizontal", "all")
 
-        private fun clamp(t: Float) = maxOf(16f, minOf(32f, t))
-
-        private fun humBias(humidity: Int?, low: Int = HUM_LOW, high: Int = HUM_HIGH, biasMax: Float = HUM_BIAS_MAX): Float {
-            if (humidity == null || humidity <= low) return 0f
-            if (high <= low) return biasMax
-            return biasMax * minOf(1f, (humidity - low).toFloat() / (high - low))
+        private fun vaneModePair(mode: String): Pair<Boolean, Boolean> = when (mode) {
+            "fixed" -> false to false
+            "vertical" -> true to false
+            "horizontal" -> false to true
+            "all" -> true to true
+            else -> true to true
         }
 
-        private fun decide(cur: Float, target: Float, prevWf: Boolean, margin: Float = MARGIN): Boolean {
+        private fun humBias(humidity: Int?, low: Int, high: Int, biasMax: Float): Float {
+            if (humidity == null || humidity <= low) return 0f
+            if (high <= low) return biasMax
+            return biasMax * min(1f, (humidity - low).toFloat() / (high - low))
+        }
+
+        private fun decide(cur: Float, target: Float, prevWf: Boolean, margin: Float): Boolean {
             val delta = cur - target
             return if (prevWf) delta < margin else delta < -margin
         }

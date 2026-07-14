@@ -1,18 +1,17 @@
 package com.samsung.ac.bridge.protocol
 
+import java.util.concurrent.atomic.AtomicInteger
+
 object PacketBuilder {
     private const val START_BYTE = 0x32
     private const val END_BYTE = 0x34
     private val SRC = byteArrayOf(0x62.toByte(), 0x00.toByte(), 0x00.toByte())
     private val MSG_TYPE = byteArrayOf(0xC0.toByte(), 0x13.toByte())
 
-    private var seq: Int = 0
+    // 여러 유닛의 AcController가 서로 다른 스레드에서 동시에 명령을 보낼 수 있으므로 원자적 증가.
+    private val seq = AtomicInteger(0)
 
-    private fun nextSeq(): Int {
-        val val0 = seq
-        seq = (seq + 1) and 0xFF
-        return val0
-    }
+    private fun nextSeq(): Int = seq.getAndIncrement() and 0xFF
 
     private fun build(dst: ByteArray, items: List<Pair<Int, ByteArray>>): ByteArray {
         val seq = nextSeq()
