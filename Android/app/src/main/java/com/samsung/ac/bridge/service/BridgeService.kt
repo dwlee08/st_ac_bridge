@@ -26,6 +26,7 @@ class BridgeService : Service() {
     private lateinit var icoolManager: IcoolManager
     private lateinit var afterblowManager: AfterBlowManager
     private val stores = mutableMapOf<String, StateStore>()
+    private val controllers = mutableMapOf<String, AcController>()
 
     override fun onCreate() {
         super.onCreate()
@@ -45,21 +46,21 @@ class BridgeService : Service() {
 
         serviceScope.launch {
             try {
-                // Initialize EW11 client first
-                ew11 = EW11Client(ew11Host, ew11Port, stores)
-
-                // Create controllers (real or mock)
-                val controllers = mutableMapOf<String, AcController>()
-                if (mockMode) {
-                    Log.i(TAG, "Using mock AC controllers")
-                } else {
-                    Log.i(TAG, "Using real AC controllers (EW11 mode)")
-                }
-
-                // Initialize managers
+                // Initialize managers first (before EW11, since they need to be ready for packets)
                 icoolManager = IcoolManager(stores, controllers)
-                afterblowManager = AfterBlowManager(stores, icoolManager)
+                afterblowManager = AfterBlowManager(stores, controllers, icoolManager)
                 tcpServer = TcpServer(serverPort, stores, icoolManager, afterblowManager)
+
+                // Initialize EW11 client with unit discovery callback
+                ew11 = EW11Client(stores, onUnitDiscovered = { uid, address ->
+                    // Auto-create controller for newly discovered unit
+                    if (mockMode) {
+                        controllers[uid] = MockAcController(uid, stores[uid]!!)
+                    } else {
+                        controllers[uid] = RealAcController(uid, address, stores[uid]!!, ew11)
+                    }
+                    Log.i(TAG, "Created controller for unit: $uid")
+                })
 
                 // Start TCP server
                 launch {

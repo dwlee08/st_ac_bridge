@@ -10,7 +10,8 @@ import kotlin.math.min
 class EW11Client(
     private val host: String,
     private val port: Int,
-    private val stores: Map<String, StateStore>,
+    private val stores: MutableMap<String, StateStore>,
+    private val onUnitDiscovered: suspend (uid: String, address: ByteArray) -> Unit = { _, _ -> },
 ) {
     private var socket: Socket? = null
     private var reader: Socket.InputStream? = null
@@ -102,13 +103,16 @@ class EW11Client(
                 src[0].toInt() == 0x10 -> StateDecoder.decodeOutdoorCodes(pkt.codes)
                 else -> StateDecoder.decodeCodes(pkt.codes)
             }
-            val store = stores[uid]
-            if (store != null) {
-                store.update(updates)
-                Log.d(TAG, "Updated $uid: $updates")
-            } else {
-                Log.d(TAG, "Unknown unit: $uid")
+            var store = stores[uid]
+            if (store == null) {
+                // Auto-register new unit
+                store = StateStore()
+                stores[uid] = store
+                onUnitDiscovered(uid, src)
+                Log.i(TAG, "Auto-registered unit: $uid")
             }
+            store.update(updates)
+            Log.d(TAG, "Updated $uid: $updates")
         }
     }
 

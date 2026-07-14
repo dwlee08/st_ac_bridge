@@ -1,6 +1,8 @@
 package com.samsung.ac.bridge.afterblow
 
 import android.util.Log
+import com.samsung.ac.bridge.ac.AcController
+import com.samsung.ac.bridge.icool.IcoolManager
 import com.samsung.ac.bridge.protocol.AcStatus
 import com.samsung.ac.bridge.state.StateStore
 import kotlinx.coroutines.*
@@ -23,7 +25,8 @@ class AfterBlowState(
 
 class AfterBlowManager(
     private val stores: Map<String, StateStore>,
-    private val icoolManager: Any? = null, // IcoolManager (to avoid circular dependency)
+    private val controllers: Map<String, AcController> = emptyMap(),
+    private val icoolManager: IcoolManager? = null,
 ) {
     private val states = mutableMapOf<String, AfterBlowState>()
 
@@ -49,6 +52,7 @@ class AfterBlowManager(
     }
 
     suspend fun onPowerOff(uid: String): Boolean {
+        val ctrl = controllers[uid] ?: return false
         val store = stores[uid] ?: return false
         val st = states[uid] ?: return false
         if (!st.enabled) return false
@@ -69,10 +73,20 @@ class AfterBlowManager(
 
         // Stop icool if running
         if (icoolManager != null) {
-            // TODO: call icoolManager.stop(uid, "after_blow")
+            icoolManager.stop(uid, "after_blow")
         }
 
-        // TODO: send AC commands (set_auto_clean(false), apply_settings)
+        // Send AC commands
+        ctrl.setAutoClean(false)
+        ctrl.applySettings(mapOf(
+            "power" to true,
+            "mode" to "fanOnly",
+            "fan_mode" to "high",
+            "vane_vertical" to false,
+            "vane_horizontal" to false,
+            "wind_free" to false,
+            "long_wind" to false,
+        ))
         Log.i(TAG, "$uid afterblow start: run=${runSec}s → drying ${drySec}min (auto_clean OFF)")
         return true
     }
@@ -107,6 +121,7 @@ class AfterBlowManager(
     }
 
     private suspend fun tick(uid: String, st: AfterBlowState) {
+        val ctrl = controllers[uid] ?: return
         val store = stores[uid] ?: return
         val status = store.get()
         val now = System.currentTimeMillis()
@@ -121,21 +136,22 @@ class AfterBlowManager(
 
         // Drying in progress
         when {
-            st.dry_deadline != null && now >= st.dry_deadline!! -> {
+            st.dryDeadline != null && now >= st.dryDeadline!! -> {
                 // Timer expired
                 val savedAuto = st.savedAuto
                 st.drying = false
-                st.dry_deadline = null
+                st.dryDeadline = null
                 st.savedState = null
                 st.wasPowered = false
-                // TODO: send power OFF + restore auto_clean
+                ctrl.setPower(false)
+                ctrl.setAutoClean(savedAuto)
                 Log.i(TAG, "$uid afterblow complete → power OFF (auto_clean=${savedAuto})")
             }
 
             !status.power -> {
                 // Remote power OFF during drying
                 st.drying = false
-                st.dry_deadline = null
+                st.dryDeadline = null
                 st.savedState = null
                 st.wasPowered = false
                 Log.i(TAG, "$uid afterblow external power OFF → stop")
@@ -146,16 +162,27 @@ class AfterBlowManager(
                 val saved = st.savedState
                 val savedAuto = st.savedAuto
                 st.drying = false
-                st.dry_deadline = null
+                st.dryDeadline = null
                 st.savedState = null
-                restore(uid, saved, savedAuto, "remote adjustment during drying")
+                restore(uid, ctrl, saved, savedAuto, "remote adjustment during drying")
             }
         }
     }
 
-    private suspend fun restore(uid: String, saved: AcStatus?, savedAuto: Boolean, why: String) {
+    private suspend fun restore(uid: String, ctrl: AcController, saved: AcStatus?, savedAuto: Boolean, why: String) {
         if (saved == null) return
-        // TODO: send apply_settings + set_auto_clean
+        val settings = mapOf(
+            "power" to saved.power,
+            "mode" to saved.mode,
+            "target_temp" to saved.targetTemp,
+            "fan_mode" to saved.fanMode,
+            "vane_vertical" to saved.vaneVertical,
+            "vane_horizontal" to saved.vaneHorizontal,
+            "wind_free" to saved.windFree,
+            "long_wind" to saved.longWind,
+        )
+        ctrl.applySettings(settings)
+        ctrl.setAutoClean(savedAuto)
         Log.i(TAG, "$uid afterblow restored ($why)")
     }
 
