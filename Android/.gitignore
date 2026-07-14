@@ -1,0 +1,24 @@
+# Gradle files
+.gradle/
+build/
+*.apk
+*.aar
+*.ap_
+*.aab
+
+# Android Studio
+.idea/
+*.iml
+*.iws
+*.ipr
+.DS_Store
+
+# Kotlin
+.kotlin/
+
+# Local configuration file
+local.properties
+
+# Lint results
+lint-results.xml
+lint-results-debug.html
