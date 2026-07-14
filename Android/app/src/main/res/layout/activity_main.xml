@@ -42,4 +42,11 @@
         android:text="@string/stop_service"
         android:layout_marginTop="8dp" />
 
+    <Button
+        android:id="@+id/settings_btn"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/settings"
+        android:layout_marginTop="24dp" />
+
 </LinearLayout>

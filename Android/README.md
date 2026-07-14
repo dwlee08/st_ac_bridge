@@ -128,19 +128,30 @@ Foreground Service는 지속적으로 실행되며, 배터리 소비가 있습�
 
 ### Phase 2: 제어 로직 ✅
 - [x] IcoolManager (인텔리전트 냉방 루프)
+- [x] AfterBlowManager (스마트 송풍 건조)
 - [x] TcpServer (세션 처리)
 - [x] BridgeService (Foreground Service 래퍼)
 
-### Phase 3: 프로토콜 (진행 중)
-- [ ] PacketParser (C014, C016 등 파싱)
-- [ ] PacketBuilder (C013 구성)
-- [ ] EW11 패킷 송수신 루프
+### Phase 3: 프로토콜 ✅
+- [x] PacketParser (C014, C016 파싱)
+- [x] PacketBuilder (C013 구성)
+- [x] PacketProtocol (상수, 코드 매핑)
+- [x] StateDecoder (코드→필드 변환)
 
-### Phase 4: UI 및 통합
-- [x] MainActivity (기본 UI)
-- [ ] 설정 화면 (EW11 호스트, 포트 설정)
-- [ ] 상태 모니터링 (연결 상태, 로그)
-- [ ] 테스트 (Python Bridge와 병행 테스트)
+### Phase 4: AC 제어 ✅
+- [x] AcController (추상 인터페이스)
+- [x] RealAcController (EW11 명령 전송)
+- [x] MockAcController (테스트용)
+
+### Phase 5: UI 및 설정 ✅
+- [x] MainActivity (서비스 제어 UI)
+- [x] SettingsActivity (설정 화면)
+- [x] ConfigManager (SharedPreferences 관리)
+
+### Phase 6: 향후 작업 (Handoff)
+- [ ] StreamHub (상태 변경 푸시) - HANDOFF.md 참고
+- [ ] 실제 하드웨어 테스트
+- [ ] SmartThings Edge Driver 연동 검증
 
 ## 참고
 
