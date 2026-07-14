@@ -17,7 +17,7 @@ object PacketBuilder {
         val seq = nextSeq()
         val count = items.size
         val data = items.flatMap { (code, value) ->
-            code.toBytes2Big() + value.toList()
+            code.toBytes2Big().toList() + value.toList()
         }.toByteArray()
 
         val inner = SRC + dst + MSG_TYPE + byteArrayOf(seq.toByte(), count.toByte()) + data

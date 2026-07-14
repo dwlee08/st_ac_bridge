@@ -17,6 +17,15 @@ import kotlin.math.min
 // 설정온도 클램프는 프로토콜의 유효 범위(18~30℃)와 일치해야 한다. IcoolState/IcoolManager 공용.
 internal fun clampTemp(t: Float) = max(PacketProtocol.TEMP_MIN, min(PacketProtocol.TEMP_MAX, t))
 
+// IcoolState 생성자 기본값 — 튜닝 파라미터의 초기값.
+private const val MARGIN = 0.5f
+private const val BLOW_OFFSET = 1.0f
+private const val FAN_BLOW = "high"
+private const val VANE_BLOW = "all"
+private const val HUM_LOW = 65
+private const val HUM_HIGH = 80
+private const val HUM_BIAS_MAX = 1.0f
+
 class IcoolState(
     val uid: String,
     var active: Boolean = false,
@@ -272,13 +281,6 @@ class IcoolManager(
 
     companion object {
         private const val TAG = "IcoolManager"
-        private const val MARGIN = 0.5f
-        private const val BLOW_OFFSET = 1.0f
-        private const val FAN_BLOW = "high"
-        private const val VANE_BLOW = "all"
-        private const val HUM_LOW = 65
-        private const val HUM_HIGH = 80
-        private const val HUM_BIAS_MAX = 1.0f
         private const val TICK_SEC = 5L
         private const val MIN_VALID_TEMP = 5.0f
         private val BLOW_FANS = setOf("auto", "low", "medium", "high")

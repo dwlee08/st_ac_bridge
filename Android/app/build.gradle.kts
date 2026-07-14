@@ -1,6 +1,21 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("com.google.firebase.appdistribution")
+}
+
+// 릴리스 서명 정보는 git에 올리지 않는 keystore.properties에서 읽는다(있을 때만).
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
+}
+
+// Firebase App Distribution 설정도 git에 올리지 않는 firebase.properties에서 읽는다(있을 때만).
+val firebasePropsFile = rootProject.file("firebase.properties")
+val firebaseProps = Properties().apply {
+    if (firebasePropsFile.exists()) firebasePropsFile.inputStream().use { load(it) }
 }
 
 android {
@@ -17,10 +32,36 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("release") {
+            if (keystoreProps.isNotEmpty()) {
+                storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // keystore.properties가 있을 때만 릴리스 서명 적용(없으면 unsigned 로 빌드)
+            if (keystoreProps.isNotEmpty()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+
+            // Firebase App Distribution 업로드 설정. 값은 firebase.properties / 서비스계정 키에서.
+            //   업로드:  ./gradlew assembleRelease appDistributionUploadRelease
+            firebaseAppDistribution {
+                appId = firebaseProps.getProperty("appId") ?: ""
+                artifactType = "APK"
+                // 테스터 그룹(쉼표 구분). Firebase 콘솔에서 만든 그룹 별칭.
+                groups = firebaseProps.getProperty("groups") ?: ""
+                serviceCredentialsFile = rootProject.file("firebase-service-account.json").absolutePath
+                releaseNotes = firebaseProps.getProperty("releaseNotes") ?: "AC Bridge release"
+            }
         }
     }
 

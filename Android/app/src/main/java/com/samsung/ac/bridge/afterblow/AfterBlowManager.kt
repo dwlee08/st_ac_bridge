@@ -12,6 +12,11 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.max
 import kotlin.math.min
 
+// AfterBlowState의 생성자 기본값과 AfterBlowManager가 공유하는 기본 파라미터.
+private const val RATIO_DEFAULT = 50
+private const val MAX_MIN_DEFAULT = 60
+private const val MIN_MIN_DEFAULT = 3
+
 class AfterBlowState(
     val uid: String,
     var enabled: Boolean = false,
@@ -186,9 +191,6 @@ class AfterBlowManager(
     companion object {
         private const val TAG = "AfterBlowManager"
         private const val TICK_SEC = 5L
-        private const val RATIO_DEFAULT = 50
-        private const val MAX_MIN_DEFAULT = 60
-        private const val MIN_MIN_DEFAULT = 3
 
         // 건조(송풍) 단계에서 에어컨에 강제할 설정
         private val BLOW_FIELDS = mapOf(

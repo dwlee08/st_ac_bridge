@@ -1,0 +1,13 @@
+# Firebase App Distribution 설정 템플릿.
+# 이 파일을 `firebase.properties` 로 복사한 뒤 값을 채우세요. (firebase.properties 는 git에 올라가지 않음)
+#
+# appId: Firebase 콘솔 > 프로젝트 설정 > 내 앱 > Android 앱의 "앱 ID"
+#        형식: 1:1234567890:android:abcdef123456
+appId=
+
+# groups: 배포할 테스터 그룹 별칭(쉼표 구분). Firebase 콘솔 > App Distribution > 테스터 및 그룹에서 생성.
+#         예) family,testers
+groups=
+
+# releaseNotes: 이번 배포에 붙일 릴리스 노트(선택)
+releaseNotes=

@@ -7,4 +7,6 @@
     <string name="service_status">Service Status</string>
     <string name="connected">Connected</string>
     <string name="disconnected">Disconnected</string>
+    <string name="device_address">Bridge Address (for SmartThings)</string>
+    <string name="address_unavailable">Not connected to Wi-Fi</string>
 </resources>

@@ -19,6 +19,15 @@ build/
 # Local configuration file
 local.properties
 
+# Release signing — 절대 커밋 금지 (키 분실 시 동일 서명으로 업데이트 불가)
+keystore.properties
+*.jks
+*.keystore
+
+# Firebase — 서비스 계정 키 및 로컬 설정 (템플릿 firebase.properties.example 만 커밋)
+firebase-service-account.json
+firebase.properties
+
 # Lint results
 lint-results.xml
 lint-results-debug.html

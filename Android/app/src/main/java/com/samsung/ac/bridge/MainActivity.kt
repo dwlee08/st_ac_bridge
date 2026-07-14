@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.widget.Button
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
@@ -12,9 +13,12 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.samsung.ac.bridge.config.ConfigManager
 import com.samsung.ac.bridge.service.BridgeService
+import java.net.Inet4Address
+import java.net.NetworkInterface
 
 class MainActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
+    private lateinit var addressText: TextView
     private lateinit var startBtn: Button
     private lateinit var stopBtn: Button
     private lateinit var settingsBtn: Button
@@ -31,6 +35,7 @@ class MainActivity : AppCompatActivity() {
         configManager = ConfigManager(this)
 
         statusText = findViewById(R.id.status_text)
+        addressText = findViewById(R.id.address_text)
         startBtn = findViewById(R.id.start_btn)
         stopBtn = findViewById(R.id.stop_btn)
         settingsBtn = findViewById(R.id.settings_btn)
@@ -41,6 +46,13 @@ class MainActivity : AppCompatActivity() {
 
         requestNotificationPermissionIfNeeded()
         updateStatus()
+        updateAddress()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Wi-Fi 연결/IP가 바뀌었을 수 있으니 화면 복귀 시 갱신
+        updateAddress()
     }
 
     // API 33+ 포그라운드 서비스 알림 표시에 필요한 런타임 권한
@@ -89,5 +101,36 @@ class MainActivity : AppCompatActivity() {
         }
         startBtn.isEnabled = !isServiceRunning
         stopBtn.isEnabled = isServiceRunning
+    }
+
+    // SmartThings가 접속할 "기기IP:포트"를 표시. IP를 못 구하면 안내 문구.
+    private fun updateAddress() {
+        val ip = localIpAddress()
+        addressText.text = if (ip != null) {
+            "$ip:${configManager.serverPort}"
+        } else {
+            getString(R.string.address_unavailable)
+        }
+    }
+
+    // 별도 권한 없이 활성 네트워크 인터페이스에서 사설 IPv4 주소를 찾는다(Wi-Fi/이더넷).
+    private fun localIpAddress(): String? {
+        return try {
+            NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
+                .asSequence()
+                .filter { it.isUp && !it.isLoopback && !it.isVirtual }
+                .flatMap { it.inetAddresses.asSequence() }
+                .filterIsInstance<Inet4Address>()
+                .filter { !it.isLoopbackAddress && it.isSiteLocalAddress }
+                .firstOrNull()
+                ?.hostAddress
+        } catch (e: Exception) {
+            Log.w(TAG, "IP 조회 실패", e)
+            null
+        }
+    }
+
+    companion object {
+        private const val TAG = "MainActivity"
     }
 }
