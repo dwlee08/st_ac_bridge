@@ -5,7 +5,17 @@ services:
     restart: unless-stopped
     ports:
       - "8888:8888"
-    volumes:
-      - ./config.json:/app/config.json
+    # 방법 2: 환경 변수 주입 (entrypoint 가 이 값들로 config.json 을 생성)
     environment:
+      - EW11_HOST=192.168.x.x
+      - EW11_PORT=8899
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8888
+      - AC_MODE=real
       - LOG_LEVEL=INFO
+      # - UNITS=[{"id":"200000","address":"200000","label":"에어컨 1"}]
+
+    # 방법 1: config.json 파일을 직접 마운트해서 쓰려면 아래를 활성화하고
+    #         CONFIG_FROM_ENV=false 를 environment 에 추가한다.
+    # volumes:
+    #   - ./config.json:/app/config.json
