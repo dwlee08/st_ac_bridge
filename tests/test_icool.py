@@ -115,16 +115,52 @@ def test_full_cycle_transitions_and_no_false_deviation():
     run(main())
 
 
-def test_external_change_stops_session():
+def test_external_mode_change_stops_after_debounce():
+    # 모드 변경은 실제 종료 신호. 단 한 tick 오차 흡수를 위해 DEVIATE_TICKS 연속돼야 종료.
     async def main():
         store, ctrl = make_unit()
         await store.update(current_temp=27.0)
         m = IcoolManager({"u1": ctrl})
         await m.start("u1", target=24.0)
         st = m._state("u1")
-        await store.update(fan_mode="low")     # 외부에서 풍량 변경
+        await store.update(mode="auto")        # 외부에서 모드 변경
         await m._tick("u1", st)
-        assert not st.active
+        assert st.active                        # 1틱: 디바운스 유예
+        await m._tick("u1", st)
+        assert not st.active                    # 2틱 연속: 종료
+    run(main())
+
+
+def test_transient_deviation_recovers_without_stop():
+    # 한 tick만 어긋났다가 회복되면 종료하지 않는다(디바운스).
+    async def main():
+        store, ctrl = make_unit()
+        await store.update(current_temp=27.0)
+        m = IcoolManager({"u1": ctrl})
+        await m.start("u1", target=24.0)
+        st = m._state("u1")
+        await store.update(mode="auto")        # 순간 어긋남
+        await m._tick("u1", st)
+        assert st.active and st.deviate_count == 1
+        await store.update(mode="cool")        # 회복
+        await m._tick("u1", st)
+        assert st.active and st.deviate_count == 0
+    run(main())
+
+
+def test_autonomous_fan_vane_change_does_not_stop():
+    # AC가 냉방 중 풍량/풍향을 스스로 바꿔도 icool은 유지된다(리포트 A/B/E).
+    async def main():
+        store, ctrl = make_unit()
+        await store.update(current_temp=27.0)
+        m = IcoolManager({"u1": ctrl})
+        await m.start("u1", target=24.0)        # blow 단계(high, vane all)
+        st = m._state("u1")
+        await store.update(fan_mode="low", vane_vertical=False, vane_horizontal=False)
+        await m._tick("u1", st)
+        assert st.active
+        await m._tick("u1", st)
+        assert st.active                        # 여러 틱 지나도 유지
     run(main())
 
 

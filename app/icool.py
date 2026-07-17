@@ -15,8 +15,9 @@
 시작: 전원 on, 냉방(cool), 현재 온도로 초기 단계 결정 — 이미 목표 아래면 무풍,
       아니면 상하·좌우 풍향 + 강풍 + 설정온도=목표-1.0 (이후 루프가 조절).
 모든 시작/전환은 apply_settings로 C013 한 패킷에 담아 전송 — AC 조작음 1회.
-종료: 타이머 만료, 또는 icool가 명령한 "예상 상태"와 실제가 어긋나면(전원/모드/풍량
-      /풍향/무풍/설정온도 — 엣지·리모컨·판넬 무관) 종료. AC 상태는 그대로 둔다.
+종료: 타이머 만료, 또는 icool가 명령한 "예상 상태"와 실제가 어긋나면(전원/모드/무풍
+      /설정온도 — 엣지·리모컨·판넬 무관) 종료. 풍량·풍향은 AC가 냉방 중 스스로 조정하므로
+      종료 신호에서 제외하고, 남은 신호도 한 tick 오차를 흡수하도록 디바운스한다. AC 상태는 그대로 둔다.
 """
 from __future__ import annotations
 
@@ -42,6 +43,7 @@ HUM_LOW = 65          # 이 습도(%RH) 이하면 체감온도 보정 없음
 HUM_HIGH = 80         # 이 습도 이상이면 최대 보정 (사이 구간은 선형)
 HUM_BIAS_MAX = 1.0    # 체감온도 최대 보정(℃)
 TICK_SEC = 5          # 제어 루프 주기(초) — 루프가 1개라 유닛 공용(전역), 설정 대상 아님
+DEVIATE_TICKS = 2     # 어긋남이 이만큼 연속돼야 종료(디바운스). 정착 전/과도상태 오종료 방지.
 _MIN_VALID_TEMP = 5.0  # 실측 온도가 이 미만이면 아직 미수신으로 보고 제어 보류
 
 _BLOW_FANS = {"auto", "low", "medium", "high"}
@@ -81,6 +83,7 @@ class IcoolState:
     timer_sec: float | None = None
     timer_last: float | None = None   # 마지막 감소 시각(monotonic)
     wind_free: bool = False         # 현재 무풍 단계 여부
+    deviate_count: int = 0          # 연속 어긋남 tick 수(디바운스용). 일치하면 0으로 리셋.
     saved_state: dict | None = None    # icool 시작(신규) 시점의 AC 상태 스냅샷.
                                        # 스위치 OFF로 종료할 때 이 상태로 복원한다
                                        # (원래 전원 off였으면 복원=전원 off, on이었으면 원래 냉방 설정 복원).
@@ -186,6 +189,7 @@ class IcoolManager:
             if target is not None:
                 st.target = _clamp(float(target))
             st.active = True
+            st.deviate_count = 0   # 새 시작/재적용 시 디바운스 카운터 초기화
             await self._apply_start(ctrl, st, fresh=not was_active)
         logger.info("[icool] %s start target=%.1f "
                     "(margin=%.2f blow_off=%.2f hum=%d/%d/%.2f fan=%s vane=%s)",
@@ -310,11 +314,16 @@ class IcoolManager:
         async with st.lock:
             if not st.active:
                 return
-            # 예상 상태와 어긋나면 외부 조작으로 보고 icool 종료 (타이머는 건드리지 않음)
+            # 예상 상태와 어긋나면 외부 조작으로 보고 icool 종료 (타이머는 건드리지 않음).
+            # 단, 한 tick 오차로 오종료하지 않도록 DEVIATE_TICKS 연속 어긋남을 요구(디바운스).
             if self._deviated(status, st):
-                st.active = False
-                logger.info("[icool] %s stop (external change)", uid)
-                return
+                st.deviate_count += 1
+                if st.deviate_count >= DEVIATE_TICKS:
+                    st.active = False
+                    st.deviate_count = 0
+                    logger.info("[icool] %s stop (external change)", uid)
+                return   # 유예 중엔 제어 보류(회복되면 다음 tick에 리셋)
+            st.deviate_count = 0
             # 온도 제어 (실측 미수신 시 보류)
             cur = status.current_temp or 0.0
             if cur < _MIN_VALID_TEMP:
@@ -378,6 +387,10 @@ class IcoolManager:
         st.wind_free = wf
 
     # ── 종료 판정 (단계별 예상 상태 vs 실제) ─────────────────────
+    # 종료 신호는 "AC가 스스로 바꾸지 않는" 필드로 한정한다: 전원 OFF, 모드 변경,
+    # 무풍 토글, 설정온도 변경. 풍량(fan_mode)·풍향(vane)은 냉방 중 AC가 목표 근접 시
+    # 스스로 램프다운/재배치하므로 종료 신호에서 제외한다(리포트 A/B/E). 모델마다 이
+    # 자율동작이 달라 icool이 조기종료·냉방 리버트되던 문제를 막는다.
     def _deviated(self, status, st: IcoolState) -> bool:
         if not status.power:
             return True                            # 전원 off
@@ -385,17 +398,13 @@ class IcoolManager:
             return True                            # 모드 변경
         if st.wind_free:  # 무풍 중엔 풍량/풍향을 AC가 강제하므로 제외
             if not status.wind_free:
-                return True
+                return True                        # 무풍 해제(사용자/외부)
             if abs(status.target_temp - _clamp(st.target)) > 0.05:
-                return True
+                return True                        # 설정온도 변경
         else:
             if status.wind_free:
-                return True
-            v, h = _VANE_MODES.get(st.blow_vane, (True, True))   # 유닛별 냉방 단계 풍향
-            if status.vane_vertical != v or status.vane_horizontal != h:
-                return True
-            if status.fan_mode != st.blow_fan:   # 유닛별 냉방 단계 풍량 (_blow_fields와 일치해야 함)
-                return True
+                return True                        # 무풍이 예기치 않게 켜짐(사용자/외부)
+            # fan_mode·vane 자율변화는 종료 신호에서 제외 (위 주석 참고)
             if abs(status.target_temp - st.cool_sp()) > 0.05:
-                return True
+                return True                        # 설정온도 변경
         return False
