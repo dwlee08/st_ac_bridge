@@ -127,9 +127,10 @@ class AfterBlowManager:
             st.saved_auto = status.auto_clean
             st.drying = True
             st.dry_deadline = time.monotonic() + dry_sec
-        # icool 동작 중이면 정지(전원을 곧 끌 것이므로)
+        # icool 동작 중이면 정지(전원을 곧 끌 것이므로). 복원은 하지 않는다 —
+        # icool.stop의 "냉방 ON 복원"이 곧 있을 전원 OFF/송풍과 충돌하기 때문(리포트 D).
         if self._icool is not None:
-            await self._icool.stop(uid, reason="after_blow")
+            await self._icool.stop(uid, reason="after_blow", restore=False)
         await ctrl.set_auto_clean(False)          # 시작 직전에만 자동건조 끔(이중 건조 방지)
         await ctrl.apply_settings(**_blow_fields())
         logger.info("[afterblow] %s 시작: run=%.0fs → 송풍 %.0f분 (자동건조 OFF)",

@@ -206,7 +206,7 @@ class IcoolManager:
                     uid, st.margin, st.blow_offset, st.hum_low, st.hum_high, st.hum_bias_max,
                     st.blow_fan, st.blow_vane)
 
-    async def stop(self, uid: str, reason: str = "user") -> None:
+    async def stop(self, uid: str, reason: str = "user", restore: bool = True) -> None:
         st = self._states.get(uid)
         if st is None:
             return
@@ -218,6 +218,11 @@ class IcoolManager:
             saved = st.saved_state
             st.saved_state = None
         logger.info("[icool] %s stop (%s)", uid, reason)
+        # restore=False면 복원하지 않고 비활성화만 한다. 호출측이 곧 전원을 끌
+        # 예정(애프터블로우)인데 "냉방 ON 복원"을 하면 전원 OFF 의도와 충돌해
+        # AC가 냉방으로 되살아나기 때문(리포트 D). 이 경우 상태만 비활성화한다.
+        if not restore:
+            return
         # 스위치 OFF 시 시작 시점 상태로 복원:
         #  - 원래 전원 off였으면 → AC 전원 OFF (icool이 켠 전원을 되돌림)
         #  - 원래 켜져 있던 냉방이면 → 그때의 모드/온도/풍량/풍향/무풍 설정 복원
