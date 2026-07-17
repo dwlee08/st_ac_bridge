@@ -80,8 +80,9 @@ class AfterBlowManager(
             st.drying = true
             st.dryDeadline = now + (drySec * 1000).toLong()
         }
-        // icool 동작 중이면 정지(전원을 곧 끌 것이므로) — 락 밖에서
-        icoolManager?.stop(uid, "after_blow")
+        // icool 동작 중이면 정지(전원을 곧 끌 것이므로) — 락 밖에서. 복원은 하지 않는다:
+        // icool.stop의 "냉방 ON 복원"이 곧 있을 전원 OFF/송풍과 충돌하기 때문(리포트 D).
+        icoolManager?.stop(uid, "after_blow", doRestore = false)
         ctrl.setAutoClean(false)                        // 시작 직전에만 자동건조 끔(이중 건조 방지)
         ctrl.applySettings(BLOW_FIELDS)
         Log.i(TAG, "$uid afterblow start → 송풍 ${drySec / 60}분 (자동건조 OFF)")

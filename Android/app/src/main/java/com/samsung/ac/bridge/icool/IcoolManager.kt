@@ -31,6 +31,7 @@ class IcoolState(
     var active: Boolean = false,
     var target: Float = 24.0f,
     var windFree: Boolean = false,
+    var deviateCount: Int = 0,   // 연속 어긋남 tick 수(디바운스용). 일치하면 0으로 리셋.
     var savedState: AcStatus? = null,
     // Timer (independent from icool)
     var durationMin: Int = 0,
@@ -79,6 +80,7 @@ class IcoolManager(
             if (config != null) applyConfig(st, config)
             if (target != null) st.target = clampTemp(target)
             st.active = true
+            st.deviateCount = 0   // 새 시작/재적용 시 디바운스 카운터 초기화
             applyStart(st, store, fresh = !wasActive)
         }
         Log.i(TAG, "$uid icool start target=${st.target}")
@@ -91,7 +93,7 @@ class IcoolManager(
                 "hum=${st.humLow}/${st.humHigh}/${st.humBiasMax} fan=${st.blowFan} vane=${st.blowVane}")
     }
 
-    suspend fun stop(uid: String, reason: String = "user") {
+    suspend fun stop(uid: String, reason: String = "user", doRestore: Boolean = true) {
         val st = states[uid] ?: return
         val saved: AcStatus?
         st.lock.withLock {
@@ -101,6 +103,9 @@ class IcoolManager(
             st.savedState = null
         }
         Log.i(TAG, "$uid icool stop ($reason)")
+        // doRestore=false면 복원하지 않고 비활성화만 한다. 애프터블로우가 곧 전원을 끄는데
+        // "냉방 ON 복원"이 끼어들면 전원 OFF 의도와 충돌해 냉방으로 되살아나기 때문(리포트 D).
+        if (!doRestore) return
         restore(uid, saved, reason)
     }
 
@@ -173,11 +178,17 @@ class IcoolManager(
         val status = stores[uid]?.get() ?: return
         st.lock.withLock {
             if (!st.active) return
+            // 한 tick 오차로 오종료하지 않도록 DEVIATE_TICKS 연속 어긋남을 요구(디바운스).
             if (deviated(status, st)) {
-                st.active = false
-                Log.i(TAG, "$uid icool stop (external change)")
-                return
+                st.deviateCount++
+                if (st.deviateCount >= DEVIATE_TICKS) {
+                    st.active = false
+                    st.deviateCount = 0
+                    Log.i(TAG, "$uid icool stop (external change)")
+                }
+                return   // 유예 중엔 제어 보류(회복되면 다음 tick에 리셋)
             }
+            st.deviateCount = 0
             val cur = status.currentTemp ?: return
             if (cur < MIN_VALID_TEMP) return
             control(uid, ctrl, st, cur, status.humidity)
@@ -231,6 +242,9 @@ class IcoolManager(
     }
 
     // 예상 상태와 어긋나면(외부 조작) icool 종료. Python _deviated 대응.
+    // 종료 신호는 "AC가 스스로 바꾸지 않는" 필드로 한정: 전원/모드/무풍/설정온도.
+    // 풍량(fanMode)·풍향(vane)은 냉방 중 AC가 목표 근접 시 스스로 램프다운/재배치하므로
+    // 종료 신호에서 제외한다(리포트 A/B/E). 모델마다 자율동작이 달라 조기종료·냉방 리버트되던 문제 방지.
     private fun deviated(status: AcStatus, st: IcoolState): Boolean {
         if (!status.power) return true
         if (status.mode != "cool") return true
@@ -239,9 +253,7 @@ class IcoolManager(
             if (abs(status.targetTemp - clampTemp(st.target)) > 0.05f) return true
         } else {
             if (status.windFree) return true
-            val (v, h) = vaneModePair(st.blowVane)
-            if (status.vaneVertical != v || status.vaneHorizontal != h) return true
-            if (status.fanMode != st.blowFan) return true
+            // fanMode·vane 자율변화는 종료 신호에서 제외 (위 주석 참고)
             if (abs(status.targetTemp - st.coolSp()) > 0.05f) return true
         }
         return false
@@ -282,6 +294,7 @@ class IcoolManager(
     companion object {
         private const val TAG = "IcoolManager"
         private const val TICK_SEC = 5L
+        private const val DEVIATE_TICKS = 2   // 어긋남이 이만큼 연속돼야 종료(디바운스)
         private const val MIN_VALID_TEMP = 5.0f
         private val BLOW_FANS = setOf("auto", "low", "medium", "high")
         private val VANE_MODES = setOf("fixed", "vertical", "horizontal", "all")
