@@ -16,6 +16,26 @@ MAX_PAYLOAD = 512
 MSG_TYPE_STATUS = 0xC014
 MSG_TYPE_ACK    = 0xC016
 
+# NASA 주소는 3바이트 class.channel.address 구조다.
+# class 0xFF는 Undefined, channel/address 0xFF는 "미지정(와일드카드)"을 뜻하며
+# 20.ff.ff 같은 주소는 물리 장치가 아니라 "모든 실내기"를 가리키는 브로드캐스트다.
+ADDR_CLASS_INDOOR  = 0x20
+ADDR_WILDCARD_BYTE = 0xFF
+
+
+def is_physical_address(addr: bytes, klass: int | None = None) -> bool:
+    """실재하는 개별 장치의 주소인지 판별 (와일드카드/브로드캐스트 주소 배제).
+
+    klass를 주면 해당 address class인지도 함께 검사한다.
+    """
+    if len(addr) != 3:
+        return False
+    if klass is not None and addr[0] != klass:
+        return False
+    return (addr[0] != ADDR_WILDCARD_BYTE
+            and addr[1] != ADDR_WILDCARD_BYTE
+            and addr[2] != ADDR_WILDCARD_BYTE)
+
 
 @dataclass
 class ParsedPacket:

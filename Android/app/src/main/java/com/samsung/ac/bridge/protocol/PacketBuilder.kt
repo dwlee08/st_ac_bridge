@@ -14,6 +14,11 @@ object PacketBuilder {
     private fun nextSeq(): Int = seq.getAndIncrement() and 0xFF
 
     private fun build(dst: ByteArray, items: List<Pair<Int, ByteArray>>): ByteArray {
+        // 와일드카드 주소(예: 20.ff.ff)로 보내면 모든 실내기에 동시 기록된다.
+        // 유령 유닛이 어떤 경로로든 등록됐을 때의 최후 방어선.
+        require(PacketProtocol.isPhysicalAddress(dst)) {
+            "refusing to send to non-physical address: ${dst.joinToString("") { "%02x".format(it) }}"
+        }
         val seq = nextSeq()
         val count = items.size
         val data = items.flatMap { (code, value) ->

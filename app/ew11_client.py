@@ -7,7 +7,14 @@ from typing import TYPE_CHECKING
 
 import packet_builder as pb
 from ac_controller import RealAcController
-from packet_parser import MSG_TYPE_ACK, MSG_TYPE_STATUS, ParsedPacket, extract_packets
+from packet_parser import (
+    ADDR_CLASS_INDOOR,
+    MSG_TYPE_ACK,
+    MSG_TYPE_STATUS,
+    ParsedPacket,
+    extract_packets,
+    is_physical_address,
+)
 from state_decoder import decode_codes, decode_outdoor_codes
 from state_store import OutdoorStore, StateStore
 
@@ -17,11 +24,29 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 OUTDOOR_SRC        = bytes([0x10, 0x00, 0x00])
-INDOOR_SRC_PREFIX  = 0x20   # 실내기 주소 첫 바이트
+INDOOR_SRC_PREFIX  = ADDR_CLASS_INDOOR   # 실내기 주소 첫 바이트
 MAX_BUF            = 8192
 RECONNECT_DELAY    = 5
 BUS_IDLE_MS        = 100
 RECONCILE_INTERVAL = 5
+
+# 자동 등록 게이트 ─ 유령 유닛(예: 20.ff.ff 브로드캐스트 주소) 차단용.
+# 실내기라면 반드시 실리는 운전 상태 코드. 하나도 없는 C014(설치/진단/기타
+# 알림 패킷)로는 유닛을 만들지 않는다.
+INDOOR_STATUS_CODES = frozenset({
+    0x4000,  # power
+    0x4001,  # mode
+    0x4006,  # fan mode
+    0x4201,  # target temp
+    0x4203,  # room temp
+})
+# 일회성 패킷(오검출/전원투입 중 과도상태)으로 등록되지 않도록 요구하는 관측 횟수.
+MIN_SIGHTINGS_TO_REGISTER = 2
+
+
+def has_indoor_status(codes: list[tuple[int, bytes]]) -> bool:
+    """실내기 운전 상태 코드가 하나라도 실려 있는지."""
+    return any(code in INDOOR_STATUS_CODES for code, _ in codes)
 
 
 class EW11Client:
@@ -34,11 +59,17 @@ class EW11Client:
         controllers: dict[str, AcController] | None = None,
         unit_labels: dict[str, str] | None = None,
         outdoor_store: OutdoorStore | None = None,
+        ignore_addresses: list[str] | None = None,
     ) -> None:
         self._host = host
         self._port = port
         self._stores = stores
         self._outdoor_store = outdoor_store
+        self._ignored: set[bytes] = {
+            bytes.fromhex(a) for a in (ignore_addresses or [])
+        }
+        self._sightings: dict[bytes, int] = {}   # 등록 후보 주소별 관측 횟수
+        self._rejected: set[bytes] = set()       # 거부 로그 1회만 남기기 위한 기록
         self._addr_to_unit: dict[bytes, str] = {v: k for k, v in unit_addresses.items()}
         self._unit_to_addr: dict[str, bytes] = dict(unit_addresses)
         self._controllers = controllers
@@ -165,6 +196,40 @@ class EW11Client:
             logger.info("EW11 reconcile TX: %s", pkt.hex())
             await self.send(pkt)
 
+    def _reject(self, addr: bytes, reason: str) -> None:
+        """등록 거부 사유를 주소당 한 번만 로깅 (버스 트래픽마다 반복 방지)."""
+        if addr in self._rejected:
+            return
+        self._rejected.add(addr)
+        logger.info("skip auto-register src=%s: %s", addr.hex(), reason)
+
+    def _maybe_register(self, pkt: ParsedPacket) -> str | None:
+        """미등록 src의 C014를 보고 등록할지 판단. 등록하지 않으면 None."""
+        addr = pkt.src
+
+        if addr in self._ignored:
+            self._reject(addr, "in ignore_addresses")
+            return None
+
+        # 20.ff.ff 처럼 channel/address가 와일드카드(0xFF)인 주소는 개별 실내기가
+        # 아니라 "모든 실내기" 브로드캐스트다. 실재하지 않으므로 등록 금지.
+        if not is_physical_address(addr, klass=INDOOR_SRC_PREFIX):
+            self._reject(addr, "not a physical indoor address")
+            return None
+
+        # 실내기 클래스지만 운전 상태 코드가 없는 패킷으로는 유닛을 만들지 않는다.
+        if not has_indoor_status(pkt.codes):
+            return None
+
+        seen = self._sightings.get(addr, 0) + 1
+        self._sightings[addr] = seen
+        if seen < MIN_SIGHTINGS_TO_REGISTER:
+            logger.info("indoor candidate %s seen %d/%d — deferring registration",
+                        addr.hex(), seen, MIN_SIGHTINGS_TO_REGISTER)
+            return None
+
+        return self._auto_register(addr)
+
     def _auto_register(self, addr: bytes) -> str:
         n = len(self._stores) + 1
         unit_id = addr.hex()
@@ -197,10 +262,9 @@ class EW11Client:
 
         unit_id = self._addr_to_unit.get(pkt.src)
         if unit_id is None:
-            if pkt.src[0] == INDOOR_SRC_PREFIX:
-                unit_id = self._auto_register(pkt.src)
-            else:
-                logger.debug("unknown src: %s", pkt.src.hex())
+            unit_id = self._maybe_register(pkt)
+            if unit_id is None:
+                logger.debug("unregistered src: %s", pkt.src.hex())
                 return
         logger.info("EW11 RX C014: unit=%s codes=%s", unit_id, [(hex(c), v.hex()) for c, v in pkt.codes])
 

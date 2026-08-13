@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from packet_parser import crc16_xmodem
+from packet_parser import crc16_xmodem, is_physical_address
 from protocol import FAN_CODES, MODE_CODES, normalize_airflow
 
 START_BYTE = 0x32
@@ -26,6 +26,10 @@ def _next_seq() -> int:
 
 def _build(dst: bytes, items: list[tuple[int, bytes]]) -> bytes:
     """items: [(code_int, value_bytes), ...]"""
+    # 와일드카드 주소(예: 20.ff.ff)로 보내면 모든 실내기에 동시 기록된다.
+    # 유령 유닛이 어떤 경로로든 등록됐을 때의 최후 방어선.
+    if not is_physical_address(dst):
+        raise ValueError(f"refusing to send to non-physical address: {dst.hex()}")
     seq   = _next_seq()
     count = len(items)
     data  = b"".join(c.to_bytes(2, "big") + v for c, v in items)

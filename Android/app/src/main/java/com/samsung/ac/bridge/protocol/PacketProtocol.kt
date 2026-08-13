@@ -11,6 +11,21 @@ object PacketProtocol {
     const val MSG_TYPE_STATUS = 0xC014
     const val MSG_TYPE_ACK = 0xC016
 
+    // NASA 주소는 3바이트 class.channel.address 구조다.
+    // channel/address 0xFF는 "미지정(와일드카드)"이며 20.ff.ff 는 물리 장치가 아니라
+    // "모든 실내기" 브로드캐스트 주소다.
+    const val ADDR_CLASS_OUTDOOR = 0x10
+    const val ADDR_CLASS_INDOOR = 0x20
+    const val ADDR_WILDCARD_BYTE = 0xFF
+
+    /** 실재하는 개별 장치의 주소인지 (와일드카드/브로드캐스트 배제). klass를 주면 클래스도 검사. */
+    fun isPhysicalAddress(addr: ByteArray, klass: Int? = null): Boolean {
+        if (addr.size != 3) return false
+        val b = addr.map { it.toInt() and 0xFF }
+        if (klass != null && b[0] != klass) return false
+        return b.none { it == ADDR_WILDCARD_BYTE }
+    }
+
     // Mode/Fan code mappings
     val MODE_CODES = mapOf("auto" to 0, "cool" to 1, "dry" to 2, "fanOnly" to 3)
     val MODE_BY_CODE = MODE_CODES.entries.associate { it.value to it.key }

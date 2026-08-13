@@ -9,5 +9,6 @@
   },
   "controller_mode": "real",
   "log_level": "INFO",
-  "units": []
+  "units": [],
+  "ignore_addresses": []
 }

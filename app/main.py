@@ -11,6 +11,7 @@ from ac_controller import AcController, MockAcController, RealAcController
 from afterblow import AfterBlowManager
 from ew11_client import EW11Client
 from icool import IcoolManager
+from packet_parser import is_physical_address
 from state_store import OutdoorStore, StateStore
 from stream import StreamHub
 from tcp_server import TcpServer
@@ -61,6 +62,11 @@ async def main() -> None:
     for unit in units_cfg:
         uid = str(unit["id"])
         addr_bytes = bytes.fromhex(str(unit["address"]))
+        if not is_physical_address(addr_bytes):
+            # 와일드카드 주소(예: 20ffff)는 개별 실내기가 아니라 브로드캐스트다.
+            logger.error("unit skipped — not a physical address: id=%s address=%s",
+                         uid, unit["address"])
+            continue
         stores[uid] = StateStore()
         unit_addresses[uid] = addr_bytes
         unit_labels[uid] = unit.get("label", uid)
@@ -84,6 +90,7 @@ async def main() -> None:
             controllers=controllers,
             unit_labels=unit_labels,
             outdoor_store=outdoor_store,
+            ignore_addresses=config.get("ignore_addresses", []),
         )
         for uid, store in stores.items():
             controllers[uid] = RealAcController(unit_addresses[uid], store, ew11)

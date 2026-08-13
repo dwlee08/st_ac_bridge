@@ -18,6 +18,7 @@ else
     AC_MODE="${AC_MODE:-real}"
     LOG_LEVEL="${LOG_LEVEL:-INFO}"
     UNITS="${UNITS:-[]}"                # 실내기 사전등록용 JSON 배열(선택). 예: '[{"id":"200000","address":"200000"}]'
+    IGNORE_ADDRESSES="${IGNORE_ADDRESSES:-[]}"  # 자동등록 제외 주소 JSON 배열(선택). 예: '["200003"]'
 
     cat > "${CONFIG_PATH}" <<EOF
 {
@@ -31,7 +32,8 @@ else
   },
   "controller_mode": "${AC_MODE}",
   "log_level": "${LOG_LEVEL}",
-  "units": ${UNITS}
+  "units": ${UNITS},
+  "ignore_addresses": ${IGNORE_ADDRESSES}
 }
 EOF
 

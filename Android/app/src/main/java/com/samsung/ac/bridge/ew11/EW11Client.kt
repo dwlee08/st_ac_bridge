@@ -25,6 +25,8 @@ class EW11Client(
     private val sendMutex = Mutex()
     @Volatile private var lastRxTime = System.currentTimeMillis()
     private var rxBuffer = byteArrayOf()
+    private val sightings = mutableMapOf<String, Int>()   // 등록 후보 주소별 관측 횟수
+    private val rejected = mutableSetOf<String>()         // 거부 로그 1회만 남기기 위한 기록
 
     val isConnected: Boolean
         get() = socket?.isConnected == true && !socket!!.isClosed
@@ -117,14 +119,33 @@ class EW11Client(
         }
 
         val uid = src.hex()
-        var store = stores[uid]
-        if (store == null) {
-            store = StateStore()
-            stores[uid] = store
-            onUnitDiscovered(uid, src.copyOf())
-            Log.i(TAG, "Auto-registered unit: $uid")
-        }
+        val store = stores[uid] ?: maybeRegister(src, uid, pkt) ?: return
         store.update(StateDecoder.decodeCodes(pkt.codes))
+    }
+
+    /** 미등록 src의 C014를 보고 등록할지 판단. 등록하지 않으면 null. */
+    private suspend fun maybeRegister(src: ByteArray, uid: String, pkt: ParsedPacket): StateStore? {
+        // 20.ff.ff 처럼 channel/address가 와일드카드(0xFF)인 주소는 개별 실내기가 아니라
+        // "모든 실내기" 브로드캐스트다. 실외기·리모컨·WiFi킷 등 다른 클래스도 유닛이 아니다.
+        if (!PacketProtocol.isPhysicalAddress(src, PacketProtocol.ADDR_CLASS_INDOOR)) {
+            if (rejected.add(uid)) Log.i(TAG, "Skip auto-register $uid: not a physical indoor address")
+            return null
+        }
+        // 실내기 클래스지만 운전 상태 코드가 없는 패킷으로는 유닛을 만들지 않는다.
+        if (pkt.codes.none { it.first in INDOOR_STATUS_CODES }) return null
+        // 일회성 패킷으로 등록되지 않도록 관측 횟수를 요구한다.
+        val seen = (sightings[uid] ?: 0) + 1
+        sightings[uid] = seen
+        if (seen < MIN_SIGHTINGS_TO_REGISTER) {
+            Log.i(TAG, "Indoor candidate $uid seen $seen/$MIN_SIGHTINGS_TO_REGISTER — deferring registration")
+            return null
+        }
+
+        val store = StateStore()
+        stores[uid] = store
+        onUnitDiscovered(uid, src.copyOf())
+        Log.i(TAG, "Auto-registered unit: $uid")
+        return store
     }
 
     private suspend fun waitBusIdle() {
@@ -141,6 +162,11 @@ class EW11Client(
         private const val TAG = "EW11Client"
         private const val BUS_IDLE_MS = 100L
         private const val MAX_BUF = 8192
-        private const val OUTDOOR_PREFIX = 0x10
+        private const val OUTDOOR_PREFIX = PacketProtocol.ADDR_CLASS_OUTDOOR
+
+        // 자동 등록 게이트 ─ 유령 유닛(예: 20ffff 브로드캐스트 주소) 차단용.
+        // 실내기라면 반드시 실리는 운전 상태 코드: power/mode/fan/target/room temp.
+        private val INDOOR_STATUS_CODES = setOf(0x4000, 0x4001, 0x4006, 0x4201, 0x4203)
+        private const val MIN_SIGHTINGS_TO_REGISTER = 2
     }
 }
