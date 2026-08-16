@@ -9,9 +9,12 @@ import sys
 
 from ac_controller import AcController, MockAcController, RealAcController
 from afterblow import AfterBlowManager
+from commands import CommandService
 from ew11_client import EW11Client
+from http_server import HttpServer
 from icool import IcoolManager
 from packet_parser import is_physical_address
+from rest_api import Router
 from state_store import OutdoorStore, StateStore
 from stream import StreamHub
 from tcp_server import TcpServer
@@ -46,6 +49,9 @@ async def main() -> None:
     server_cfg = config.get("server", {})
     host = os.environ.get("SERVER_HOST") or server_cfg.get("host", "0.0.0.0")
     port = int(os.environ.get("SERVER_PORT") or server_cfg.get("port", 8888))
+    # REST API는 기존 TCP(줄단위 JSON)와 별도 포트에서 병행 제공한다.
+    # 0으로 두면 REST를 띄우지 않는다(TCP 전용 운용).
+    rest_port = int(os.environ.get("REST_PORT") or server_cfg.get("rest_port", 8082))
 
     ctrl_mode = os.environ.get("AC_MODE") or config.get("controller_mode", "real")
     logger.info("AC Bridge Server starting — mode=%s", ctrl_mode)
@@ -113,10 +119,21 @@ async def main() -> None:
         unit_labels=unit_labels, outdoor_store=outdoor_store,
         icool=icool, afterblow=afterblow, hub=hub,
     )
+
+    # REST API — TCP 세션과 같은 CommandService/StreamHub를 공유한다.
+    rest_task: asyncio.Task | None = None
+    if rest_port > 0:
+        service = CommandService(controllers, unit_labels, outdoor_store, icool, afterblow)
+        rest = HttpServer(host=host, port=rest_port, router=Router(service), hub=hub)
+        await rest.start()
+        rest_task = asyncio.create_task(rest.serve_forever(), name="rest-server")
+    else:
+        logger.info("REST API disabled (rest_port=0)")
+
     try:
         await server.serve_forever()
     finally:
-        for task in (ew11_task, icool_task, afterblow_task, hub_task):
+        for task in (ew11_task, icool_task, afterblow_task, hub_task, rest_task):
             if task:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)

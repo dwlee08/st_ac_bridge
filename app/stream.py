@@ -28,8 +28,40 @@ logger = logging.getLogger(__name__)
 SWEEP_INTERVAL = 1.0   # 상태 변경 감지 주기(초)
 
 
-def _encode(msg: dict) -> bytes:
-    return (json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8")
+def _json(msg: dict) -> str:
+    return json.dumps(msg, ensure_ascii=False)
+
+
+class Subscriber:
+    """허브가 push하는 대상. 전송 프레이밍만 구현체마다 다르다."""
+
+    def __init__(self, writer: StreamWriter) -> None:
+        self._writer = writer
+
+    def encode(self, msg: dict) -> bytes:
+        raise NotImplementedError
+
+    async def send(self, msg: dict) -> None:
+        self._writer.write(self.encode(msg))
+        await self._writer.drain()
+
+
+class LineSubscriber(Subscriber):
+    """TCP 세션(SUBSCRIBE) — 줄단위 JSON."""
+
+    def encode(self, msg: dict) -> bytes:
+        return (_json(msg) + "\n").encode("utf-8")
+
+
+class SseSubscriber(Subscriber):
+    """REST(GET /events) — Server-Sent Events.
+
+    data 페이로드는 TCP 스트림과 동일한 JSON(t 필드 포함)이라 엣지 쪽 적용
+    로직을 그대로 쓸 수 있고, event: 이름은 표준 SSE 클라이언트용 편의다.
+    """
+
+    def encode(self, msg: dict) -> bytes:
+        return f"event: {msg.get('t', 'message')}\ndata: {_json(msg)}\n\n".encode("utf-8")
 
 
 class StreamHub:
@@ -44,7 +76,7 @@ class StreamHub:
         self._icool = icool
         self._outdoor_store = outdoor_store
         self._afterblow = afterblow
-        self._subs: set[StreamWriter] = set()
+        self._subs: set[Subscriber] = set()
         self._last_unit: dict[str, dict] = {}
         self._last_outdoor: dict = {}
         self._lock = asyncio.Lock()
@@ -69,29 +101,26 @@ class StreamHub:
                 "outdoor": outdoor.to_dict() if outdoor else {}}
 
     # ── 구독자 관리 ──────────────────────────────────────────────
-    async def add_subscriber(self, writer: StreamWriter) -> None:
+    async def add_subscriber(self, sub: Subscriber) -> None:
         async with self._lock:
-            self._subs.add(writer)
+            self._subs.add(sub)
         try:
-            writer.write(_encode(await self.snapshot()))
-            await writer.drain()
+            await sub.send(await self.snapshot())
             logger.info("stream subscriber added (%d total)", len(self._subs))
         except Exception:
-            await self.remove_subscriber(writer)
+            await self.remove_subscriber(sub)
 
-    async def remove_subscriber(self, writer: StreamWriter) -> None:
+    async def remove_subscriber(self, sub: Subscriber) -> None:
         async with self._lock:
-            self._subs.discard(writer)
+            self._subs.discard(sub)
 
     async def _broadcast(self, msg: dict) -> None:
-        data = _encode(msg)
         async with self._lock:
             subs = list(self._subs)
         dead = []
         for w in subs:
             try:
-                w.write(data)
-                await w.drain()
+                await w.send(msg)
             except Exception:
                 dead.append(w)
         if dead:

@@ -6,14 +6,11 @@ import logging
 from asyncio import StreamReader, StreamWriter
 
 from ac_controller import AcController
+from commands import CommandError, CommandService
 from icool import IcoolManager
 from state_store import OutdoorStore
-from stream import StreamHub
+from stream import LineSubscriber, StreamHub
 from protocol import (
-    TEMP_MAX,
-    TEMP_MIN,
-    VALID_FAN_MODES,
-    VALID_MODES,
     ProtocolError,
     Request,
     err_response,
@@ -45,7 +42,10 @@ class Session:
         self._icool = icool
         self._hub = hub
         self._afterblow = afterblow
-        self._subscribed = False
+        self._sub: LineSubscriber | None = None
+        # 명령 처리는 REST와 공유하는 서비스 계층에 위임 (검증/부가동작 단일 구현)
+        self._svc = CommandService(
+            controllers, self._unit_labels, outdoor_store, icool, afterblow)
 
     async def run(self) -> None:
         logger.info("session started: %s", self._peer)
@@ -64,8 +64,8 @@ class Session:
         except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError):
             pass
         finally:
-            if self._subscribed and self._hub is not None:
-                await self._hub.remove_subscriber(self._writer)
+            if self._sub is not None and self._hub is not None:
+                await self._hub.remove_subscriber(self._sub)
             logger.info("session closed: %s", self._peer)
             self._writer.close()
 
@@ -87,21 +87,32 @@ class Session:
         logger.info("resp ok=%s from %s", resp.ok, self._peer)
         await self._send(resp.serialize())
 
-    def _resolve_controller(
-        self, params: dict,
-    ) -> tuple[AcController | None, str | None, str | None]:
-        """unit_id(필수)로 (컨트롤러, uid, 오류메시지) 반환.
-
-        엣지는 유닛 대상 명령에 항상 unit_id를 포함한다(계약). 누락과
-        미등록을 구분해 에러를 돌려준다.
-        """
-        uid = params.get("unit_id")
-        if uid is None:
-            return None, None, "missing required param: unit_id"
-        ctrl = self._controllers.get(uid)
-        if ctrl is None:
-            return None, uid, f"unknown unit_id: {uid}"
-        return ctrl, uid, None
+    # 명령 → 서비스 호출. 파라미터 검증·부가동작은 전부 CommandService에 있고
+    # 여기서는 params dict를 인자로 풀어주는 일만 한다 (REST 라우트와 같은 계층 공유).
+    _HANDLERS = {
+        "LIST_UNITS":        lambda svc, p: svc.list_units(),
+        "STATUS_OUTDOOR":    lambda svc, p: svc.outdoor_status(),
+        "STATUS":            lambda svc, p: svc.unit_status(p.get("unit_id")),
+        "SET_POWER":         lambda svc, p: svc.set_power(p.get("unit_id"), p.get("on")),
+        "SET_MODE":          lambda svc, p: svc.set_mode(p.get("unit_id"), p.get("mode")),
+        "SET_TEMP":          lambda svc, p: svc.set_target_temp(p.get("unit_id"), p.get("temp")),
+        "SET_FAN":           lambda svc, p: svc.set_fan_mode(p.get("unit_id"), p.get("fan")),
+        "SET_VANE":          lambda svc, p: svc.set_vane(
+                                 p.get("unit_id"), p.get("vertical"), p.get("horizontal")),
+        "SET_WIND_FREE":     lambda svc, p: svc.set_wind_free(p.get("unit_id"), p.get("on")),
+        "SET_LONG_WIND":     lambda svc, p: svc.set_long_wind(p.get("unit_id"), p.get("on")),
+        "SET_AUTO_CLEAN":    lambda svc, p: svc.set_auto_clean(p.get("unit_id"), p.get("on")),
+        "SET_SMART_DRY":     lambda svc, p: svc.set_smart_dry(
+                                 p.get("unit_id"), p.get("on"), ratio=p.get("ratio"),
+                                 max_min=p.get("max_min"), min_min=p.get("min_min")),
+        "SET_ICOOL":         lambda svc, p: svc.set_icool(
+                                 p.get("unit_id"), p.get("on"),
+                                 target=p.get("target"), config=p.get("config")),
+        "SET_ICOOL_DURATION": lambda svc, p: svc.set_icool_duration(
+                                 p.get("unit_id"), p.get("duration")),
+        "SET_ICOOL_CONFIG":  lambda svc, p: svc.set_icool_config(
+                                 p.get("unit_id"), p.get("config")),
+    }
 
     async def _dispatch(self, req: Request):
         cmd = req.cmd
@@ -114,192 +125,20 @@ class Session:
             # 이 연결을 이벤트 스트림으로 전환. 이후 hub가 스냅샷 + 변경분을 push.
             if self._hub is None:
                 return err_response(req.id, "stream not available")
-            await self._hub.add_subscriber(self._writer)
-            self._subscribed = True
+            self._sub = LineSubscriber(self._writer)
+            await self._hub.add_subscriber(self._sub)
             return None
 
-        if cmd == "LIST_UNITS":
-            units = [
-                {"id": uid, "label": self._unit_labels.get(uid, uid)}
-                for uid in self._controllers
-            ]
-            return ok_response(req.id, {"units": units})
+        handler = self._HANDLERS.get(cmd)
+        if handler is None:
+            return err_response(req.id, f"unknown command: {cmd}")
 
-        if cmd == "STATUS_OUTDOOR":
-            if self._outdoor_store is None:
-                return err_response(req.id, "outdoor status not available")
-            status = await self._outdoor_store.get()
-            return ok_response(req.id, status.to_dict())
-
-        ctrl, uid, err = self._resolve_controller(p)
-        if ctrl is None:
-            return err_response(req.id, err)
-
-        if cmd == "STATUS":
-            status = await ctrl.get_status()
-            data = status.to_dict()
-            data["unit_id"] = uid
-            # 시스템 순시전력(실외기 합산 실측)을 공유값으로 echo.
-            # 각 실내기 디바이스가 동일 값을 powerMeter로 노출(중복 표시는 무방).
-            # 누적 에너지(powerConsumptionReport)는 중복 합산 방지를 위해
-            # 실내기 STATUS에 넣지 않고 STATUS_OUTDOOR(Gateway 전용)로만 제공한다.
-            if self._outdoor_store is not None:
-                outdoor = await self._outdoor_store.get()
-                if outdoor.power_w is not None:
-                    data["system_power_w"] = outdoor.power_w
-            # 인텔리전트 냉방 상태(활성/남은시간/문구)를 STATUS에 실어 엣지가 그대로 표시
-            if self._icool is not None:
-                data.update(self._icool.status(uid))
-            # 스마트 애프터 블로우: 활성 여부 + 송풍 중 power=off 마스킹 (icool 뒤에 적용해 마스킹 우선)
-            if self._afterblow is not None:
-                data.update(self._afterblow.status(uid))
-            return ok_response(req.id, data)
-
-        if cmd == "SET_POWER":
-            on = p.get("on")
-            if not isinstance(on, bool):
-                return err_response(req.id, "params.on must be boolean")
-            if self._afterblow is not None:
-                if on:
-                    # 송풍 건조 중 전원 ON → 저장 상태 복원하고 종료(정상 on 대체)
-                    if await self._afterblow.resume(uid):
-                        return ok_response(req.id, self._afterblow.status(uid))
-                else:
-                    # 전원 OFF → 조건 맞으면 바로 끄지 않고 송풍 건조 시작
-                    if await self._afterblow.on_power_off(uid):
-                        return ok_response(req.id, self._afterblow.status(uid))
-            await ctrl.set_power(on)
-            return ok_response(req.id)
-
-        if cmd == "SET_SMART_DRY":
-            if self._afterblow is None:
-                return err_response(req.id, "after blow not available")
-            on = p.get("on")
-            if not isinstance(on, bool):
-                return err_response(req.id, "params.on must be boolean")
-            ratio = p.get("ratio")
-            max_min = p.get("max_min")
-            min_min = p.get("min_min")
-            await self._afterblow.set_enabled(uid, on, ratio=ratio, max_min=max_min, min_min=min_min)
-            return ok_response(req.id, self._afterblow.status(uid))
-
-        if cmd == "SET_MODE":
-            mode = p.get("mode")
-            if mode not in VALID_MODES:
-                return err_response(req.id, f"invalid mode: {mode}")
-            if mode == "fanOnly":
-                status = await ctrl.get_status()
-                if status.fan_mode == "auto":
-                    # 송풍 모드는 풍량 auto 미지원 → low로 보정해
-                    # 모드+풍량을 한 패킷으로 적용 (D1 정책)
-                    await ctrl.apply_settings(mode="fanOnly", fan_mode="low")
-                    return ok_response(req.id, {"fan_corrected": "low"})
-            await ctrl.set_mode(mode)
-            return ok_response(req.id)
-
-        if cmd == "SET_TEMP":
-            temp = p.get("temp")
-            if not isinstance(temp, (int, float)):
-                return err_response(req.id, "params.temp must be number")
-            temp = float(temp)
-            if temp < TEMP_MIN or temp > TEMP_MAX:
-                return err_response(req.id, f"temp out of range: {TEMP_MIN}~{TEMP_MAX}")
-            # 0.5℃ 단위로 반올림
-            temp = round(temp * 2) / 2
-            await ctrl.set_target_temp(temp)
-            return ok_response(req.id)
-
-        if cmd == "SET_FAN":
-            fan = p.get("fan")
-            if fan not in VALID_FAN_MODES:
-                return err_response(req.id, f"invalid fan mode: {fan}")
-            status = await ctrl.get_status()
-            if status.mode == "fanOnly" and fan == "auto":
-                return err_response(req.id, "fan mode auto is not allowed when mode=fanOnly")
-            await ctrl.set_fan_mode(fan)
-            return ok_response(req.id)
-
-        if cmd == "SET_VANE":
-            vertical   = p.get("vertical")
-            horizontal = p.get("horizontal")
-            if vertical is None and horizontal is None:
-                return err_response(req.id, "params.vertical or horizontal required")
-            if vertical is not None and not isinstance(vertical, bool):
-                return err_response(req.id, "params.vertical must be boolean")
-            if horizontal is not None and not isinstance(horizontal, bool):
-                return err_response(req.id, "params.horizontal must be boolean")
-            # 생략된 축은 현재 상태(source of truth)를 유지 → 상하/좌우 독립 제어.
-            if vertical is None or horizontal is None:
-                cur = await ctrl.get_status()
-                if vertical is None:
-                    vertical = cur.vane_vertical
-                if horizontal is None:
-                    horizontal = cur.vane_horizontal
-            await ctrl.set_vane(vertical, horizontal)
-            return ok_response(req.id)
-
-        if cmd == "SET_WIND_FREE":
-            on = p.get("on")
-            if not isinstance(on, bool):
-                return err_response(req.id, "params.on must be boolean")
-            await ctrl.set_wind_free(on)
-            return ok_response(req.id)
-
-        if cmd == "SET_LONG_WIND":
-            on = p.get("on")
-            if not isinstance(on, bool):
-                return err_response(req.id, "params.on must be boolean")
-            await ctrl.set_long_wind(on)
-            return ok_response(req.id)
-
-        if cmd == "SET_AUTO_CLEAN":
-            on = p.get("on")
-            if not isinstance(on, bool):
-                return err_response(req.id, "params.on must be boolean")
-            await ctrl.set_auto_clean(on)
-            return ok_response(req.id)
-
-        # 인텔리전트 냉방: on=시작(목표/제한시간), off=종료. 실제 제어는 브릿지 루프가 담당.
-        if cmd == "SET_ICOOL":
-            if self._icool is None:
-                return err_response(req.id, "icool not available")
-            on = p.get("on")
-            if not isinstance(on, bool):
-                return err_response(req.id, "params.on must be boolean")
-            if on:
-                target = p.get("target")
-                config = p.get("config")
-                if target is not None and not isinstance(target, (int, float)):
-                    return err_response(req.id, "params.target must be number")
-                if config is not None and not isinstance(config, dict):
-                    return err_response(req.id, "params.config must be object")
-                # 타이머(duration)는 icool과 분리 — SET_ICOOL_DURATION으로만 제어한다.
-                await self._icool.start(uid, target=target, config=config)
-            else:
-                await self._icool.stop(uid)
-            return ok_response(req.id, self._icool.status(uid))
-
-        if cmd == "SET_ICOOL_DURATION":
-            if self._icool is None:
-                return err_response(req.id, "icool not available")
-            duration = p.get("duration")
-            if not isinstance(duration, (int, float)):
-                return err_response(req.id, "params.duration must be number")
-            await self._icool.set_duration(uid, int(duration))
-            return ok_response(req.id, self._icool.status(uid))
-
-        # 인텔리전트 냉방 유닛별 튜닝값(무풍 여유폭/강풍 오프셋/습도 보정/강풍 풍량) 설정.
-        # 엣지 기기 설정(preferences) 변경·초기화 시 전달. 동작 중이면 다음 tick부터 반영.
-        if cmd == "SET_ICOOL_CONFIG":
-            if self._icool is None:
-                return err_response(req.id, "icool not available")
-            config = p.get("config")
-            if not isinstance(config, dict):
-                return err_response(req.id, "params.config must be object")
-            await self._icool.set_config(uid, config)
-            return ok_response(req.id, self._icool.status(uid))
-
-        return err_response(req.id, f"unknown command: {cmd}")
+        try:
+            result = handler(self._svc, p)
+            data = await result if asyncio.iscoroutine(result) else result
+        except CommandError as e:
+            return err_response(req.id, str(e))
+        return ok_response(req.id, data)
 
     async def _send(self, data: str) -> None:
         self._writer.write(data.encode("utf-8"))

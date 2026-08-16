@@ -8,9 +8,19 @@ Samsung System AC
    EW11 WiFi Bridge
       ↕ TCP
  AC Bridge Server  ← 이 프로젝트
-      ↕ TCP
+      ↕ TCP(8888, 줄단위 JSON) / REST+SSE(8082)
 SmartThings Edge Driver
 ```
+
+엣지 드라이버용 인터페이스는 두 가지를 **동시에** 제공한다.
+
+| 인터페이스 | 포트 | 쓰는 드라이버 |
+|---|---|---|
+| 줄단위 JSON over TCP | 8888 | `plus`, `edge` |
+| REST API + SSE | 8082 | `plus_v2` |
+
+두 인터페이스는 같은 명령 로직(`app/commands.py`)과 같은 이벤트 허브(`app/stream.py`)를
+공유하므로 어느 쪽으로 제어해도 동작과 상태 반영이 동일하다.
 
 ---
 
@@ -45,7 +55,8 @@ nano config.json
 {
   "server": {
     "host": "0.0.0.0",
-    "port": 8888
+    "port": 8888,
+    "rest_port": 8082
   },
   "ew11": {
     "host": "192.168.0.38",
@@ -61,7 +72,8 @@ nano config.json
 | 항목 | 설명 |
 |------|------|
 | `server.host` | 브릿지 서버 수신 주소. 외부 접속 허용 시 `"0.0.0.0"` |
-| `server.port` | 브릿지 서버 포트. Edge Driver 설정과 일치해야 함 |
+| `server.port` | TCP(줄단위 JSON) 포트. plus/edge 드라이버 설정과 일치해야 함 |
+| `server.rest_port` | REST API 포트 (기본 `8082`). plus_v2 드라이버 설정과 일치해야 함. `0`이면 REST 비활성 |
 | `ew11.host` | EW11 장치 IP 주소 |
 | `ew11.port` | EW11 TCP 포트 (기본값 `8899`) |
 | `controller_mode` | `real` = 실제 EW11 사용, `mock` = 테스트용 더미 |
@@ -129,6 +141,60 @@ docker compose up -d --build --force-recreate --no-deps
 
 ---
 
+## REST API
+
+`plus_v2` 엣지 드라이버가 사용하는 인터페이스다. 응답 봉투는 TCP 프로토콜과 같다
+(`{"ok":true,"data":{...}}` / `{"ok":false,"error":"..."}`), HTTP 상태코드는
+400=잘못된 파라미터, 404=없는 유닛/경로, 503=비활성 기능, 500=서버 오류다.
+
+| 메서드 | 경로 (`/api/v1` 접두) | 본문 | 설명 |
+|---|---|---|---|
+| GET | `/health` | | 생존 확인 + 등록 유닛 수 |
+| GET | `/units` | | 유닛 목록 `[{id,label}]` |
+| GET | `/units/{id}` | | 유닛 상태 |
+| GET | `/outdoor` | | 실외기(시스템) 상태 — 전력/에너지/외기온도 |
+| GET | `/events` | | SSE 이벤트 스트림 (아래 참조) |
+| POST | `/units/{id}/power` | `{"on":true}` | 전원 |
+| POST | `/units/{id}/mode` | `{"mode":"cool"}` | 운전 모드 (`auto`/`cool`/`dry`/`fanOnly`) |
+| POST | `/units/{id}/temperature` | `{"temp":24}` | 설정 온도 (18~30, 0.5℃ 단위 반올림) |
+| POST | `/units/{id}/fan` | `{"fan":"high"}` | 풍량 (`auto`/`low`/`medium`/`high`) |
+| POST | `/units/{id}/vane` | `{"vertical":true,"horizontal":false}` | 풍향 (생략한 축은 현재값 유지) |
+| POST | `/units/{id}/wind-free` | `{"on":true}` | 무풍 |
+| POST | `/units/{id}/long-wind` | `{"on":true}` | 롱윈드 |
+| POST | `/units/{id}/auto-clean` | `{"on":true}` | 자동 건조 |
+| POST | `/units/{id}/smart-dry` | `{"on":true,"ratio":...}` | 스마트 애프터 블로우 |
+| POST | `/units/{id}/icool` | `{"on":true,"target":24,"config":{}}` | 인텔리전트 냉방 시작/종료 |
+| POST | `/units/{id}/icool/duration` | `{"duration":30}` | 전원 끄기 타이머(분) |
+| POST | `/units/{id}/icool/config` | `{"config":{...}}` | 인텔리전트 냉방 유닛별 튜닝값 |
+
+```bash
+curl http://192.168.0.30:8082/api/v1/units
+curl http://192.168.0.30:8082/api/v1/units/200000
+curl -X POST http://192.168.0.30:8082/api/v1/units/200000/power -d '{"on":true}'
+```
+
+### 이벤트 스트림 (SSE)
+
+`GET /api/v1/events` 에 접속하면 즉시 전체 스냅샷을 받고, 이후에는 상태가 바뀔 때만
+변경분을 받는다(폴링 대체). 20초마다 `: ping` 주석이 오므로 끊김을 바로 감지할 수 있다.
+
+```
+event: snapshot
+data: {"t":"snapshot","units":{"200000":{...}},"outdoor":{...}}
+
+event: state
+data: {"t":"state","u":"200000","d":{"power":true}}
+
+event: outdoor
+data: {"t":"outdoor","d":{"power_w":1200}}
+```
+
+```bash
+curl -N http://192.168.0.30:8082/api/v1/events
+```
+
+---
+
 ## Edge Driver 연동
 
 SmartThings Edge Driver 설정에서 다음을 입력합니다.
@@ -136,7 +202,7 @@ SmartThings Edge Driver 설정에서 다음을 입력합니다.
 | 항목 | 값 |
 |------|----|
 | 서버 IP | 브릿지 서버 IP |
-| 서버 Port | `config.json`의 `server.port` (기본 `8888`) |
+| 서버 Port | `plus`/`edge`: `server.port` (기본 `8888`)<br>`plus_v2`: `server.rest_port` (기본 `8082`) |
 
 브릿지 서버 시작 후 약 5분 뒤 디바이스 디스커버리를 실행하면 자동 검색된 실내기가 SmartThings에 추가됩니다.
 
