@@ -13,7 +13,7 @@ RUN chmod +x /app/entrypoint.sh
 ENV EW11_HOST=192.168.x.x \
     EW11_PORT=8899 \
     SERVER_HOST=0.0.0.0 \
-    SERVER_PORT=8082 \
+    SERVER_PORT=8085 \
     AC_MODE=real \
     LOG_LEVEL=INFO
 

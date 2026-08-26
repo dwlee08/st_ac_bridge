@@ -8,7 +8,7 @@ Samsung System AC
    EW11 WiFi Bridge
       ↕ TCP
  AC Bridge Server  ← 이 프로젝트
-      ↕ REST + SSE (8082)
+      ↕ REST + SSE (8085)
 SmartThings Edge Driver
 ```
 
@@ -55,7 +55,7 @@ nano config.json
 {
   "server": {
     "host": "0.0.0.0",
-    "port": 8082
+    "port": 8085
   },
   "ew11": {
     "host": "192.168.0.38",
@@ -71,12 +71,15 @@ nano config.json
 | 항목 | 설명 |
 |------|------|
 | `server.host` | 브릿지 서버 수신 주소. 외부 접속 허용 시 `"0.0.0.0"` |
-| `server.port` | REST API 포트 (기본 `8082`). plus_v2 드라이버 설정과 일치해야 함 |
+| `server.port` | REST API 포트 (기본 `8085`). plus_v2 드라이버 설정과 일치해야 함 |
 | `ew11.host` | EW11 장치 IP 주소 |
 | `ew11.port` | EW11 TCP 포트 (기본값 `8899`) |
 | `controller_mode` | `real` = 실제 EW11 사용, `mock` = 테스트용 더미 |
 | `log_level` | `DEBUG` / `INFO` / `WARNING` |
 | `ignore_addresses` | 자동 등록에서 제외할 주소 목록(선택). 예: `["200003"]` |
+
+> 포트를 바꿨는데 반영되지 않으면 예전 `rest_port` / `REST_PORT` 가 남아 있는지 확인할 것.
+> 병행 구조 시절의 별칭이라 남아 있으면 `server.port` 를 덮는다(그 경우 시작 로그에 경고가 찍힌다).
 
 #### 실내기 자동 검색
 
@@ -166,9 +169,9 @@ HTTP 상태코드는 400=잘못된 파라미터, 404=없는 유닛/경로, 503=�
 | POST | `/units/{id}/icool/config` | `{"config":{...}}` | 인텔리전트 냉방 유닛별 튜닝값 |
 
 ```bash
-curl http://192.168.0.30:8082/api/v1/units
-curl http://192.168.0.30:8082/api/v1/units/200000
-curl -X POST http://192.168.0.30:8082/api/v1/units/200000/power -d '{"on":true}'
+curl http://192.168.0.30:8085/api/v1/units
+curl http://192.168.0.30:8085/api/v1/units/200000
+curl -X POST http://192.168.0.30:8085/api/v1/units/200000/power -d '{"on":true}'
 ```
 
 ### 이벤트 스트림 (SSE)
@@ -188,7 +191,7 @@ data: {"t":"outdoor","d":{"power_w":1200}}
 ```
 
 ```bash
-curl -N http://192.168.0.30:8082/api/v1/events
+curl -N http://192.168.0.30:8085/api/v1/events
 ```
 
 ---
@@ -200,7 +203,7 @@ SmartThings Edge Driver 설정에서 다음을 입력합니다.
 | 항목 | 값 |
 |------|----|
 | 서버 IP | 브릿지 서버 IP |
-| 서버 Port | `config.json`의 `server.port` (기본 `8082`) |
+| 서버 Port | `config.json`의 `server.port` (기본 `8085`) |
 
 드라이버는 REST 를 쓰는 **`plus_v2`** 여야 한다(위 호환표 참고).
 
@@ -218,8 +221,8 @@ SmartThings Edge Driver 설정에서 다음을 입력합니다.
 **에어컨 상태가 SmartThings에 반영되지 않는 경우**
 - `docker logs ac-bridge-server`에서 C014 패킷 수신 로그 확인
 - Edge Driver 설정의 서버 IP/포트 확인
-- REST 가 살아있는지 확인: `curl http://<브릿지IP>:8082/api/v1/health`
-- 실시간 반영이 안 되면 SSE 확인: `curl -N http://<브릿지IP>:8082/api/v1/events`
+- REST 가 살아있는지 확인: `curl http://<브릿지IP>:8085/api/v1/health`
+- 실시간 반영이 안 되면 SSE 확인: `curl -N http://<브릿지IP>:8085/api/v1/events`
 - 드라이버가 `plus`/`edge`(TCP)면 이 브랜치와는 통신되지 않는다 — `plus_v2` 로 교체
 
 **실재하지 않는 실내기가 잡히는 경우**

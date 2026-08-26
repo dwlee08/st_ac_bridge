@@ -47,15 +47,18 @@ async def main() -> None:
 
     server_cfg = config.get("server", {})
     host = os.environ.get("SERVER_HOST") or server_cfg.get("host", "0.0.0.0")
-    # 엣지 대면 인터페이스는 REST 하나뿐이며 server.port 가 그 포트다(기본 8082).
-    # 병행 구조 시절의 rest_port/REST_PORT 는 별칭으로 계속 받는다 — 그 값이
-    # 지정돼 있으면 우선한다(기존 배포가 8888(TCP)로 잘못 옮겨가지 않도록).
-    port = int(
-        os.environ.get("REST_PORT")
-        or server_cfg.get("rest_port")
-        or os.environ.get("SERVER_PORT")
-        or server_cfg.get("port", 8082)
-    )
+    # 엣지 대면 인터페이스는 REST 하나뿐이며 server.port 가 그 포트다(기본 8085).
+    # 병행 구조 시절의 rest_port/REST_PORT 는 별칭으로 계속 받되(기존 배포가
+    # 8888(TCP)로 잘못 옮겨가지 않도록), 남아 있으면 server.port 를 덮으므로
+    # 눈에 띄게 로깅한다 — 포트를 바꿨는데 안 바뀌는 원인이 대개 이것이다.
+    legacy_port = os.environ.get("REST_PORT") or server_cfg.get("rest_port")
+    if legacy_port:
+        logger.warning(
+            "rest_port/REST_PORT(%s)가 지정되어 server.port 대신 사용됩니다. "
+            "REST 전용 구성에서는 server.port 하나만 쓰는 것을 권장합니다.", legacy_port)
+    port = int(legacy_port
+               or os.environ.get("SERVER_PORT")
+               or server_cfg.get("port", 8085))
 
     ctrl_mode = os.environ.get("AC_MODE") or config.get("controller_mode", "real")
     logger.info("AC Bridge Server starting — mode=%s", ctrl_mode)
