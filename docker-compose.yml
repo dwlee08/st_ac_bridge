@@ -4,15 +4,13 @@ services:
     container_name: ac-bridge-server
     restart: unless-stopped
     ports:
-      - "8888:8888"
       - "8082:8082"
     # 방법 2: 환경 변수 주입 (entrypoint 가 이 값들로 config.json 을 생성)
     environment:
       - EW11_HOST=192.168.x.x
       - EW11_PORT=8899
       - SERVER_HOST=0.0.0.0
-      - SERVER_PORT=8888
-      - REST_PORT=8082
+      - SERVER_PORT=8082
       - AC_MODE=real
       - LOG_LEVEL=INFO
       # - UNITS=[{"id":"200000","address":"200000","label":"에어컨 1"}]

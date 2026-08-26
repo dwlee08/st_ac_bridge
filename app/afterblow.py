@@ -7,7 +7,7 @@
   이 사이클을 안 타므로 에어컨 자체 자동건조가 살아 있다.
 - 송풍 중 앱 전원 ON 또는 리모컨 조작이 들어오면 저장한 상태로 복원하고 종료.
 
-트리거는 앱/브릿지 경유 SET_POWER off에서만 (session이 on_power_off로 위임). 리모컨 물리 OFF는
+트리거는 앱/브릿지 경유 전원 off 명령에서만 (commands가 on_power_off로 위임). 리모컨 물리 OFF는
 이미 꺼진 뒤라 인터셉트하지 않는다.
 """
 from __future__ import annotations

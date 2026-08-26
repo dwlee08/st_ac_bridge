@@ -17,7 +17,6 @@ from packet_parser import is_physical_address
 from rest_api import Router
 from state_store import OutdoorStore, StateStore
 from stream import StreamHub
-from tcp_server import TcpServer
 
 
 def load_config(path: str) -> dict:
@@ -48,10 +47,15 @@ async def main() -> None:
 
     server_cfg = config.get("server", {})
     host = os.environ.get("SERVER_HOST") or server_cfg.get("host", "0.0.0.0")
-    port = int(os.environ.get("SERVER_PORT") or server_cfg.get("port", 8888))
-    # REST API는 기존 TCP(줄단위 JSON)와 별도 포트에서 병행 제공한다.
-    # 0으로 두면 REST를 띄우지 않는다(TCP 전용 운용).
-    rest_port = int(os.environ.get("REST_PORT") or server_cfg.get("rest_port", 8082))
+    # 엣지 대면 인터페이스는 REST 하나뿐이며 server.port 가 그 포트다(기본 8082).
+    # 병행 구조 시절의 rest_port/REST_PORT 는 별칭으로 계속 받는다 — 그 값이
+    # 지정돼 있으면 우선한다(기존 배포가 8888(TCP)로 잘못 옮겨가지 않도록).
+    port = int(
+        os.environ.get("REST_PORT")
+        or server_cfg.get("rest_port")
+        or os.environ.get("SERVER_PORT")
+        or server_cfg.get("port", 8082)
+    )
 
     ctrl_mode = os.environ.get("AC_MODE") or config.get("controller_mode", "real")
     logger.info("AC Bridge Server starting — mode=%s", ctrl_mode)
@@ -114,26 +118,14 @@ async def main() -> None:
     hub = StreamHub(controllers, icool, outdoor_store, afterblow)
     hub_task = asyncio.create_task(hub.run_loop(), name="stream-hub")
 
-    server = TcpServer(
-        host=host, port=port, controllers=controllers,
-        unit_labels=unit_labels, outdoor_store=outdoor_store,
-        icool=icool, afterblow=afterblow, hub=hub,
-    )
-
-    # REST API — TCP 세션과 같은 CommandService/StreamHub를 공유한다.
-    rest_task: asyncio.Task | None = None
-    if rest_port > 0:
-        service = CommandService(controllers, unit_labels, outdoor_store, icool, afterblow)
-        rest = HttpServer(host=host, port=rest_port, router=Router(service), hub=hub)
-        await rest.start()
-        rest_task = asyncio.create_task(rest.serve_forever(), name="rest-server")
-    else:
-        logger.info("REST API disabled (rest_port=0)")
+    # 엣지 대면 REST API (+ SSE 이벤트 스트림) — 유일한 외부 인터페이스.
+    service = CommandService(controllers, unit_labels, outdoor_store, icool, afterblow)
+    server = HttpServer(host=host, port=port, router=Router(service), hub=hub)
 
     try:
         await server.serve_forever()
     finally:
-        for task in (ew11_task, icool_task, afterblow_task, hub_task, rest_task):
+        for task in (ew11_task, icool_task, afterblow_task, hub_task):
             if task:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)

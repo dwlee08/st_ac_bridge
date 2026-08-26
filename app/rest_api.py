@@ -3,8 +3,8 @@
 전송(소켓/HTTP 파싱)은 http_server.py가 담당하고 여기서는 순수하게
 (method, path, body) → (status, payload)만 만든다. 덕분에 소켓 없이 테스트된다.
 
-응답 봉투는 TCP 프로토콜과 동일하다: {"ok":true,"data":{...}} / {"ok":false,"error":"..."}
-엣지 클라이언트가 두 전송을 같은 코드로 다룰 수 있게 하기 위함이다.
+응답 봉투: {"ok":true,"data":{...}} / {"ok":false,"error":"..."} 에 HTTP 상태코드
+(400 잘못된 파라미터 / 404 없는 유닛·경로 / 503 비활성 기능 / 500 서버 오류).
 
 라우트 (prefix /api/v1):
     GET  /health                        서버 생존 + 등록 유닛 수

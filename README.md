@@ -8,19 +8,19 @@ Samsung System AC
    EW11 WiFi Bridge
       ↕ TCP
  AC Bridge Server  ← 이 프로젝트
-      ↕ TCP(8888, 줄단위 JSON) / REST+SSE(8082)
+      ↕ REST + SSE (8082)
 SmartThings Edge Driver
 ```
 
-엣지 드라이버용 인터페이스는 두 가지를 **동시에** 제공한다.
-
-| 인터페이스 | 포트 | 쓰는 드라이버 |
-|---|---|---|
-| 줄단위 JSON over TCP | 8888 | `plus`, `edge` |
-| REST API + SSE | 8082 | `plus_v2` |
-
-두 인터페이스는 같은 명령 로직(`app/commands.py`)과 같은 이벤트 허브(`app/stream.py`)를
-공유하므로 어느 쪽으로 제어해도 동작과 상태 반영이 동일하다.
+> **이 브랜치는 REST 전용이다.** 엣지 대면 인터페이스는 REST API + SSE 하나뿐이며,
+> 예전의 줄단위 JSON TCP(8888) 서버는 제거했다.
+>
+> | 엣지 드라이버 | 이 브릿지와 호환 |
+> |---|---|
+> | `plus_v2` (REST) | ✅ |
+> | `plus`, `edge` (줄단위 JSON TCP) | ❌ |
+>
+> `plus`/`edge` 를 계속 쓰려면 이 브랜치 대신 TCP 를 함께 제공하는 브랜치(`android`)를 배포할 것.
 
 ---
 
@@ -55,8 +55,7 @@ nano config.json
 {
   "server": {
     "host": "0.0.0.0",
-    "port": 8888,
-    "rest_port": 8082
+    "port": 8082
   },
   "ew11": {
     "host": "192.168.0.38",
@@ -72,8 +71,7 @@ nano config.json
 | 항목 | 설명 |
 |------|------|
 | `server.host` | 브릿지 서버 수신 주소. 외부 접속 허용 시 `"0.0.0.0"` |
-| `server.port` | TCP(줄단위 JSON) 포트. plus/edge 드라이버 설정과 일치해야 함 |
-| `server.rest_port` | REST API 포트 (기본 `8082`). plus_v2 드라이버 설정과 일치해야 함. `0`이면 REST 비활성 |
+| `server.port` | REST API 포트 (기본 `8082`). plus_v2 드라이버 설정과 일치해야 함 |
 | `ew11.host` | EW11 장치 IP 주소 |
 | `ew11.port` | EW11 TCP 포트 (기본값 `8899`) |
 | `controller_mode` | `real` = 실제 EW11 사용, `mock` = 테스트용 더미 |
@@ -143,9 +141,9 @@ docker compose up -d --build --force-recreate --no-deps
 
 ## REST API
 
-`plus_v2` 엣지 드라이버가 사용하는 인터페이스다. 응답 봉투는 TCP 프로토콜과 같다
-(`{"ok":true,"data":{...}}` / `{"ok":false,"error":"..."}`), HTTP 상태코드는
-400=잘못된 파라미터, 404=없는 유닛/경로, 503=비활성 기능, 500=서버 오류다.
+`plus_v2` 엣지 드라이버가 사용하는 유일한 인터페이스다.
+응답 봉투는 `{"ok":true,"data":{...}}` / `{"ok":false,"error":"..."}` 이고,
+HTTP 상태코드는 400=잘못된 파라미터, 404=없는 유닛/경로, 503=비활성 기능, 500=서버 오류다.
 
 | 메서드 | 경로 (`/api/v1` 접두) | 본문 | 설명 |
 |---|---|---|---|
@@ -202,7 +200,9 @@ SmartThings Edge Driver 설정에서 다음을 입력합니다.
 | 항목 | 값 |
 |------|----|
 | 서버 IP | 브릿지 서버 IP |
-| 서버 Port | `plus`/`edge`: `server.port` (기본 `8888`)<br>`plus_v2`: `server.rest_port` (기본 `8082`) |
+| 서버 Port | `config.json`의 `server.port` (기본 `8082`) |
+
+드라이버는 REST 를 쓰는 **`plus_v2`** 여야 한다(위 호환표 참고).
 
 브릿지 서버 시작 후 약 5분 뒤 디바이스 디스커버리를 실행하면 자동 검색된 실내기가 SmartThings에 추가됩니다.
 
@@ -218,6 +218,9 @@ SmartThings Edge Driver 설정에서 다음을 입력합니다.
 **에어컨 상태가 SmartThings에 반영되지 않는 경우**
 - `docker logs ac-bridge-server`에서 C014 패킷 수신 로그 확인
 - Edge Driver 설정의 서버 IP/포트 확인
+- REST 가 살아있는지 확인: `curl http://<브릿지IP>:8082/api/v1/health`
+- 실시간 반영이 안 되면 SSE 확인: `curl -N http://<브릿지IP>:8082/api/v1/events`
+- 드라이버가 `plus`/`edge`(TCP)면 이 브랜치와는 통신되지 않는다 — `plus_v2` 로 교체
 
 **실재하지 않는 실내기가 잡히는 경우**
 - 브릿지는 메모리에만 유닛을 등록하므로 `docker restart ac-bridge-server` 로 목록이 초기화됩니다

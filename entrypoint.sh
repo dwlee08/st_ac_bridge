@@ -12,8 +12,7 @@ if [ "${CONFIG_FROM_ENV:-true}" = "false" ]; then
 else
     # 기본값 설정 (미지정 env 는 아래 기본값 사용)
     SERVER_HOST="${SERVER_HOST:-0.0.0.0}"
-    SERVER_PORT="${SERVER_PORT:-8888}"
-    REST_PORT="${REST_PORT:-8082}"   # REST API 포트. 0이면 REST 비활성(TCP 전용)
+    SERVER_PORT="${SERVER_PORT:-8082}"   # 엣지 대면 REST API 포트
     EW11_HOST="${EW11_HOST:-}"          # real 모드에서 미지정이면 앱이 명확한 에러로 종료
     EW11_PORT="${EW11_PORT:-8899}"
     AC_MODE="${AC_MODE:-real}"
@@ -25,8 +24,7 @@ else
 {
   "server": {
     "host": "${SERVER_HOST}",
-    "port": ${SERVER_PORT},
-    "rest_port": ${REST_PORT}
+    "port": ${SERVER_PORT}
   },
   "ew11": {
     "host": "${EW11_HOST}",

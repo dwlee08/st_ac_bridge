@@ -1,13 +1,12 @@
 """이벤트 스트림(push) — 구독자에게 상태 변경만 밀어주는 pub/sub 허브.
 
-엣지가 SUBSCRIBE로 지속 연결하면, 접속 즉시 전체 스냅샷을 받고 이후에는
-상태가 바뀔 때만 변경분(diff)을 push로 받는다. 폴링(STATUS 주기 조회)을 대체한다.
+엣지가 GET /api/v1/events 로 지속 연결(SSE)하면, 접속 즉시 전체 스냅샷을 받고
+이후에는 상태가 바뀔 때만 변경분(diff)을 push로 받는다. 폴링을 대체한다.
 
-프로토콜(줄단위 JSON):
-    수신  {"cmd":"SUBSCRIBE"}
-    송신  {"t":"snapshot","units":{uid:{...}},"outdoor":{...}}   # 접속 직후 1회
-          {"t":"state","u":uid,"d":{...변경필드...}}            # 유닛 상태 변경
-          {"t":"outdoor","d":{...변경필드...}}                  # 실외기 변경
+이벤트(SSE data 페이로드):
+    {"t":"snapshot","units":{uid:{...}},"outdoor":{...}}   # 접속 직후 1회
+    {"t":"state","u":uid,"d":{...변경필드...}}            # 유닛 상태 변경
+    {"t":"outdoor","d":{...변경필드...}}                  # 실외기 변경
 
 구현 메모: 매 변경 지점에 훅을 거는 대신 짧은 주기 스윕으로 유효상태(get)를
 비교해 diff만 브로드캐스트한다. 내부 비교는 공짜에 가깝고, 네트워크/ST 이벤트는
@@ -28,40 +27,24 @@ logger = logging.getLogger(__name__)
 SWEEP_INTERVAL = 1.0   # 상태 변경 감지 주기(초)
 
 
-def _json(msg: dict) -> str:
-    return json.dumps(msg, ensure_ascii=False)
+class SseSubscriber:
+    """허브가 push하는 대상 — Server-Sent Events 프레이밍.
 
-
-class Subscriber:
-    """허브가 push하는 대상. 전송 프레이밍만 구현체마다 다르다."""
+    data 는 메시지 JSON 그대로(t 필드 포함)이고, event: 이름은 표준 SSE
+    클라이언트용 편의다.
+    """
 
     def __init__(self, writer: StreamWriter) -> None:
         self._writer = writer
 
-    def encode(self, msg: dict) -> bytes:
-        raise NotImplementedError
+    @staticmethod
+    def encode(msg: dict) -> bytes:
+        data = json.dumps(msg, ensure_ascii=False)
+        return f"event: {msg.get('t', 'message')}\ndata: {data}\n\n".encode("utf-8")
 
     async def send(self, msg: dict) -> None:
         self._writer.write(self.encode(msg))
         await self._writer.drain()
-
-
-class LineSubscriber(Subscriber):
-    """TCP 세션(SUBSCRIBE) — 줄단위 JSON."""
-
-    def encode(self, msg: dict) -> bytes:
-        return (_json(msg) + "\n").encode("utf-8")
-
-
-class SseSubscriber(Subscriber):
-    """REST(GET /events) — Server-Sent Events.
-
-    data 페이로드는 TCP 스트림과 동일한 JSON(t 필드 포함)이라 엣지 쪽 적용
-    로직을 그대로 쓸 수 있고, event: 이름은 표준 SSE 클라이언트용 편의다.
-    """
-
-    def encode(self, msg: dict) -> bytes:
-        return f"event: {msg.get('t', 'message')}\ndata: {_json(msg)}\n\n".encode("utf-8")
 
 
 class StreamHub:
@@ -76,7 +59,7 @@ class StreamHub:
         self._icool = icool
         self._outdoor_store = outdoor_store
         self._afterblow = afterblow
-        self._subs: set[Subscriber] = set()
+        self._subs: set[SseSubscriber] = set()
         self._last_unit: dict[str, dict] = {}
         self._last_outdoor: dict = {}
         self._lock = asyncio.Lock()
@@ -101,7 +84,7 @@ class StreamHub:
                 "outdoor": outdoor.to_dict() if outdoor else {}}
 
     # ── 구독자 관리 ──────────────────────────────────────────────
-    async def add_subscriber(self, sub: Subscriber) -> None:
+    async def add_subscriber(self, sub: SseSubscriber) -> None:
         async with self._lock:
             self._subs.add(sub)
         try:
@@ -110,7 +93,7 @@ class StreamHub:
         except Exception:
             await self.remove_subscriber(sub)
 
-    async def remove_subscriber(self, sub: Subscriber) -> None:
+    async def remove_subscriber(self, sub: SseSubscriber) -> None:
         async with self._lock:
             self._subs.discard(sub)
 
